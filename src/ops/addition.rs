@@ -106,11 +106,10 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
     // Flooring saturates a very positive output to the largest representable float, but a very
     // negative output to `-inf`, because `-inf` is <= every finite value. So we can't just compare
     // absolute values here.
-    let limit = (T::MAX / T::TWO).nudge(1);
     let saturate_to_finite = match round {
         RoundingMode::ToNearest => unreachable!(),
-        RoundingMode::Floor => half_sum >= limit,
-        RoundingMode::Ceil => half_sum <= -limit,
+        RoundingMode::Floor => half_sum >= T::TWOP_MAXE,
+        RoundingMode::Ceil => half_sum <= -T::TWOP_MAXE,
         RoundingMode::Trunc => true,
         RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
     };
@@ -263,8 +262,7 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
                 // - Large finite value + negative subnormal returns the same value as long as the
                 //   subnormal doesn't fall to zero, but halving a negative subnormal under floor
                 //   mode retains this property.
-                let limit = (T::MAX / T::TWO).nudge(1);
-                if (a * T::HALF + b * T::HALF).abs() >= limit {
+                if (a * T::HALF + b * T::HALF).abs() >= T::TWOP_MAXE {
                     env.raise(Exceptions::OVERFLOW);
                 }
             }

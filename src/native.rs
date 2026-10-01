@@ -36,6 +36,7 @@ pub trait Native:
     const TWO: Self;
     const INFINITY: Self;
     const MAX: Self;
+    const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
     fn is_nan(self) -> bool;
     // Avoid defining `is_signaling_nan` or alike, because that's non-deterministic based on the
     // platform (since MIPS uses an inverted representation). Use the method on `types::*` instead.
@@ -58,6 +59,7 @@ macro_rules! define_methods {
             const TWO: Self = Self(2.0);
             const INFINITY: Self = Self($native::INFINITY);
             const MAX: Self = Self($native::MAX);
+            const TWOP_MAXE: Self = Self(($native::MAX / 2.0).next_up());
             fn is_nan(self) -> bool {
                 self.0.is_nan()
             }
@@ -179,14 +181,14 @@ macro_rules! define_binop {
     };
 }
 
-define_binop!(Add(add) for F32 => addps);
-define_binop!(Sub(sub) for F32 => subps);
-define_binop!(Mul(mul) for F32 => mulps);
-define_binop!(Div(div) for F32 => divps);
-define_binop!(Add(add) for F64 => addpd);
-define_binop!(Sub(sub) for F64 => subpd);
-define_binop!(Mul(mul) for F64 => mulpd);
-define_binop!(Div(div) for F64 => divpd);
+define_binop!(Add(add) for F32 => addss);
+define_binop!(Sub(sub) for F32 => subss);
+define_binop!(Mul(mul) for F32 => mulss);
+define_binop!(Div(div) for F32 => divss);
+define_binop!(Add(add) for F64 => addsd);
+define_binop!(Sub(sub) for F64 => subsd);
+define_binop!(Mul(mul) for F64 => mulsd);
+define_binop!(Div(div) for F64 => divsd);
 
 macro_rules! define_comparison {
     ($ty:ident => $insn:ident) => {
