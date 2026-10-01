@@ -1,0 +1,292 @@
+use crate::native::{self, Native};
+use bitflags::bitflags;
+use core::fmt::{self, Debug, Formatter};
+
+/// Type-safe wrapper around `f32`.
+#[derive(Clone, Copy)]
+pub struct F32(pub(crate) u32);
+
+/// Type-safe wrapper around `f64`.
+#[derive(Clone, Copy)]
+pub struct F64(pub(crate) u64);
+
+/// Type-safe [`F32`] literal, guaranteed to be non-NaN.
+#[macro_export]
+macro_rules! F32 {
+    ($x:literal) => {
+        <$crate::F32 as $crate::Float>::from_bits(f32::to_bits($x))
+    };
+}
+
+/// Type-safe [`F64`] literal, guaranteed to be non-NaN.
+#[macro_export]
+macro_rules! F64 {
+    ($x:literal) => {
+        <$crate::F64 as $crate::Float>::from_bits(f64::to_bits($x))
+    };
+}
+
+/// Common interface for [`F32`] and [`F64`].
+pub trait Float: Copy {
+    type Native: Native;
+
+    const CANONICAL_NAN: Self;
+    const NAN_QUIETNESS_BIT: <Self::Native as Native>::Bits;
+
+    /// Bitcast from an integer value.
+    ///
+    /// Can represent `NaN`, in which case the payload is preserved.
+    fn from_bits(x: <Self::Native as Native>::Bits) -> Self;
+
+    /// Bitcast to an integer value.
+    fn to_bits(self) -> <Self::Native as Native>::Bits;
+
+    /// Convert from a native value, canonicalizing `NaN` payload.
+    fn from_native_canonicalizing_nan(x: Self::Native) -> Self;
+
+    // Avoid defining `from_native_preserving_nan` thoughtlessly -- what semantics should it have
+    // wrt. NaN quietness in presence of MIPS? Similarly, avoid defining `to_native` -- use
+    // `Env::to_native` instead.
+
+    // /// Convert to a native value.
+    // ///
+    // /// If the value is `NaN`, the resulting `NaN` may be non-deterministically signaling or quiet
+    // /// compared to the original `NaN` (because on MIPS and PA-RISC the signaling bit is inverted).
+    // fn to_native_transmuting_nan(self) -> Self::Native;
+
+    /// Check whether the value is a signaling `NaN`.
+    fn is_signaling_nan(self) -> bool;
+}
+
+impl F32 {
+    /// Bitcast from a value boxed in `f64`.
+    ///
+    /// Can represent `NaN`, in which case the payload is preserved.
+    pub const fn from_boxed(x: u64) -> Self {
+        if x >= 0xffffffff00000000 {
+            Self(x as u32)
+        } else {
+            Self::CANONICAL_NAN
+        }
+    }
+}
+
+macro_rules! define_methods {
+    ($ty:ident => nan = $nan:literal, signaling = $signaling:expr, quietness_bit = $quietness_bit:literal) => {
+        impl Float for $ty {
+            type Native = native::$ty;
+
+            const CANONICAL_NAN: Self = Self($nan);
+            const NAN_QUIETNESS_BIT: <Self::Native as Native>::Bits = $quietness_bit;
+
+            fn from_bits(x: <Self::Native as Native>::Bits) -> Self {
+                Self(x)
+            }
+
+            fn to_bits(self) -> <Self::Native as Native>::Bits {
+                self.0
+            }
+
+            fn from_native_canonicalizing_nan(x: Self::Native) -> Self {
+                if x.is_nan() {
+                    Self::CANONICAL_NAN
+                } else {
+                    Self(x.to_bits())
+                }
+            }
+
+            // fn to_native_transmuting_nan(self) -> Self::Native {
+            //     Self::Native::from_bits(self.0)
+            // }
+
+            fn is_signaling_nan(self) -> bool {
+                $signaling.contains(&((self.to_bits() << 1) >> 1))
+            }
+        }
+
+        impl Debug for $ty {
+            fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+                write!(
+                    f,
+                    "{}({} as {:#x})",
+                    stringify!($ty),
+                    <Self as Float>::Native::from_bits(self.0),
+                    self.0
+                )
+            }
+        }
+    };
+}
+
+define_methods!(F32 => nan = 0x7fc00000, signaling = 0x7f800000..0x7fc00000, quietness_bit = 0x400000);
+define_methods!(F64 => nan = 0x7ff8000000000000, signaling = 0x7ff0000000000000..0x7ff8000000000000, quietness_bit = 0x8000000000000);
+
+/// Floating-point environment.
+///
+/// If the host supports floating-point exceptions, the source of truth is the native floating-point
+/// environment. Otherwise, they are stored here.
+///
+/// If the host supports rounding modes, the native rounding mode must always be in sync with the
+/// emulated rounding mode, with the exception of RMM, which may be represented as NE in native
+/// flags if the host doesn't support RMM.
+///
+/// Due to the need for this synchronization, this type should not generally be mutated directly.
+pub struct Env {
+    features: HostFeatures,
+    exceptions: Exceptions,
+    round: RoundingMode,
+}
+
+/// Features supported by the host.
+pub struct HostFeatures {
+    /// Host supports exceptions.
+    pub exceptions: bool,
+    /// Host supports basic IEEE-754 rounding modes.
+    pub round: bool,
+    /// Host supports RMM rounding mode. Implies `round`.
+    pub rmm: bool,
+    /// Host has an inverted definition of qNaN vs sNaN.
+    pub inverted_nan_quietness: bool,
+}
+
+bitflags! {
+    /// Floating-point exceptions.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct Exceptions: u32 {
+        // Bit values choosen for similarity with x86 to make `native` easier to implement, they
+        // don't have to look this way in the C port.
+        const INVALID = 1;
+        const DIVIDE_BY_ZERO = 4;
+        const OVERFLOW = 8;
+        const UNDERFLOW = 0x10;
+        const INEXACT = 0x20;
+    }
+}
+
+/// Emulated rounding mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum RoundingMode {
+    #[default]
+    ToNearest,
+    Floor,
+    Ceil,
+    Trunc,
+    ToNearestTiesToMaxMagnitude,
+}
+
+impl Env {
+    /// Initialize from host features.
+    pub fn new(features: HostFeatures) -> Self {
+        Self {
+            features,
+            exceptions: Exceptions::default(),
+            round: RoundingMode::default(),
+        }
+    }
+
+    /// Get features supported by the host.
+    pub fn features(&self) -> &HostFeatures {
+        &self.features
+    }
+
+    /// Raise all exceptions in the mask.
+    pub fn raise(&mut self, mask: Exceptions) {
+        if self.features.exceptions {
+            let mut env = native::get_env();
+            env.exceptions |= mask;
+            native::set_env(env);
+        } else {
+            self.exceptions |= mask;
+        }
+    }
+
+    /// Change active rounding mode.
+    pub fn set_rounding_mode(&mut self, round: RoundingMode) {
+        self.round = round;
+        if !self.features.round {
+            return;
+        }
+        let mut env = native::get_env();
+        env.round = if round == RoundingMode::ToNearestTiesToMaxMagnitude && !self.features.rmm {
+            RoundingMode::ToNearest
+        } else {
+            round
+        };
+        native::set_env(env);
+    }
+
+    /// If the active rounding mode needs to be emulated, returns it. In this case, the host mode is
+    /// guaranteed to be round-to-nearest.
+    pub fn emulate_rounding_mode(&self) -> Option<RoundingMode> {
+        if (self.round == RoundingMode::ToNearestTiesToMaxMagnitude && !self.features.rmm)
+            || (self.round != RoundingMode::ToNearest && !self.features.round)
+        {
+            Some(self.round)
+        } else {
+            None
+        }
+    }
+
+    /// Get raised exceptions.
+    pub fn get_exceptions(&self) -> Exceptions {
+        if self.features.exceptions {
+            native::get_env().exceptions
+        } else {
+            self.exceptions
+        }
+    }
+
+    /// Load host exception flags, if available.
+    pub fn save_host_exceptions(&self) -> Option<Exceptions> {
+        if self.features.exceptions {
+            Some(native::get_env().exceptions)
+        } else {
+            None
+        }
+    }
+
+    /// Restore host exception flags, if saved.
+    pub fn restore_host_exceptions(&self, ex: Option<Exceptions>) {
+        if self.features.exceptions {
+            let mut env = native::get_env();
+            env.exceptions = ex.unwrap();
+            native::set_env(env);
+        }
+    }
+
+    /// Convert a float to a native value, possibly naturalizing `NaN`.
+    ///
+    /// Some environments (MIPS and PA-RISC) have a flipped definition of the quietness NaN bit,
+    /// which can cause exceptions to be raised inadvertently if the float is simply transmuted.
+    ///
+    /// This function guarantees that the returned value behaves the same way as the correct value
+    /// in *arithmetic*, but it doesn't actually invert the quietness bit if the host doesn't
+    /// support exceptions, so the quietness of the resulting number may still be incorrect. Don't
+    /// check the quietness of the native value -- use [`Float::is_signaling_nan`] instead.
+    pub fn to_native<T: Float>(&self, x: T) -> T::Native {
+        let mut bits = x.to_bits();
+        if self.features.exceptions
+            && self.features.inverted_nan_quietness
+            && T::Native::from_bits(bits).is_nan()
+        {
+            bits ^= T::NAN_QUIETNESS_BIT;
+        }
+        T::Native::from_bits(bits)
+    }
+}
+
+impl HostFeatures {
+    pub const X86: Self = Self {
+        exceptions: true,
+        round: true,
+        rmm: false,
+        inverted_nan_quietness: false,
+    };
+
+    pub const WASM: Self = Self {
+        exceptions: false,
+        round: false,
+        rmm: false,
+        inverted_nan_quietness: false,
+    };
+}
