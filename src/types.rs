@@ -138,6 +138,7 @@ pub struct Env {
 }
 
 /// Features supported by the host.
+#[derive(Clone, Copy, Debug)]
 pub struct HostFeatures {
     /// Host supports exceptions.
     pub exceptions: bool,
@@ -198,6 +199,11 @@ impl Env {
         } else {
             self.exceptions |= mask;
         }
+    }
+
+    /// Get active rounding mode.
+    pub fn get_rounding_mode(&self) -> RoundingMode {
+        self.round
     }
 
     /// Change active rounding mode.
@@ -285,6 +291,20 @@ impl HostFeatures {
 
     pub const WASM: Self = Self {
         exceptions: false,
+        round: false,
+        rmm: false,
+        inverted_nan_quietness: false,
+    };
+
+    pub const ONLY_ROUNDING: Self = Self {
+        exceptions: false,
+        round: true,
+        rmm: false,
+        inverted_nan_quietness: false,
+    };
+
+    pub const ONLY_EXCEPTIONS: Self = Self {
+        exceptions: true,
         round: false,
         rmm: false,
         inverted_nan_quietness: false,

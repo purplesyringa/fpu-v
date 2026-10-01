@@ -25,6 +25,9 @@ fn do_add<T: Native, F: Float>(a: T, b: T, float1: F, float2: F, env: &mut Env) 
     sum
 }
 
+// On hosts with exceptions, this function is responsible for raising all exceptions. On hosts
+// without exceptions, it's responsible for raising overflow if the rounded sum is finite, because
+// this condition is difficult to detect afterwards.
 fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) -> T {
     if round == RoundingMode::ToNearestTiesToMaxMagnitude {
         // NE addition sets the exact same flags as RMM addition. `OVERFLOW` specifically, the only
@@ -33,49 +36,99 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         return adjust_rounding_finite(a, b, a + b, round, env);
     }
 
-    // For every rounding mode but RMM, it's possible that correctly rounded `a + b` is finite, but
-    // rounded to nearest it's infinite. The first thing this implies is that we need to save
-    // exception flags, because we may inadvertently raise overflow.
+    // For every rounding mode but NE and RMM, it's possible that correctly rounded `a + b` is
+    // finite, but rounded to nearest it's infinite. For example, a sum slightly below +inf rounds
+    // to +inf with NE, but floors to a finite value. This can erroneously raise the overflow flag,
+    // so save exceptions beforehand.
     let ex = env.save_host_exceptions();
 
     let sum = a + b;
     if !sum.is_infinite() {
         // Keep the exceptions from `a + b`, because everything except `OVERFLOW` is unaffected by
-        // rounding mode. `adjust_rounding_finite` makes sure to raise `OVERFLOW` if the correctly
-        // rounded sum turns out to be infinite, if necessary.
+        // rounding mode, and the remaining rounding modes never introduce new infinities.
+        // XXX: is underflow affected by rounding mode? IEEE-754 seems to imply "yes", but I
+        // couldn't figure out how it's affected
         return adjust_rounding_finite(a, b, sum, round, env);
     }
 
-    // Separate real infinity from rounding to infinity. As long as `a` and `b` are normal numbers,
-    // `round(a + b) = round(a/2 + b/2) * 2`, and if `a + b` is ambiguously close to infinity,
-    // `a/2 + b/2` is guaranteed to be comfortably far from it to not cause trouble. We *usually*
-    // shouldn't get subnormals here, because `finite + subnormal` never overflows for NE, but `a`
-    // can be subnormal if `b` is `+inf` or vice versa. In this case, the end result is still
-    // correct, but we need to make sure to perform the halving before restoring exceptions, so that
-    // the underflow flag is not raised spuriously.
+    // Flooring is defined as taking the largest representable float less than or equal to the exact
+    // value. Notably, this means that if `a` and `b` are large finite numbers, `floor(a + b)` is
+    // equal to the largest representable float, *not* `+inf`, because `+inf` is not <= a finite
+    // number. Despite that, IEEE-754 says that the overflow flag should be raised in this case.
+    //
+    // The presence of saturation to a finite value makes it difficult to separate the case where
+    // `a + b` is a little below `2^(maxe+1)` and gets rounded to infinity by NE, but should be
+    // rounded to the largest representable float and not raise overflow, from the case where it's
+    // above `2^(maxe+1)` and the infinity is real and the sum is saturated to the same output.
+    //
+    // To avoid complex logic, we compute `floor(a/2 + b/2)` instead of `floor(a + b)`, moving the
+    // boundary to `2^maxe`. `a/2 + b/2` never overflows, since it caps at the largest representable
+    // float, allowing adjustment logic to work with finite values. Post-processing is solely
+    // responsible for handling overflows and saturation based on a correctly floored value (modulo
+    // limited exponent range).
+    //
+    // The only issue with using `a/2` and `b/2` are subnormals. We usually don't get subnormals
+    // on this path, because `finite + subnormal` never overflows for NE, but `a` can be subnormal
+    // if `b` is infinite or vice versa. In this case, the end result is still correct, but we need
+    // to make sure to perform the halving before restoring exceptions, so that the underflow flag
+    // is not raised spuriously.
     let half_a = a * T::HALF;
     let half_b = b * T::HALF;
 
     env.restore_host_exceptions(ex);
 
-    // Going over affected flags:
+    // This line can only raise INEXACT, and we do want it to raise INEXACT:
     // - `INVALID`: if we didn't get any `NaN`s the first time, we shouldn't get them now.
-    // - `OVERFLOW`: may be set either by `a/2 + b/2` or `*2` on real infinities, which is correct.
-    // - `UNDERFLOW`: addition and `*2` never underflow.
-    // - `INEXACT`: when caused by precision loss, matches between `a/2 + b/2` and `a + b` in
-    //   absence of subnormals. When caused by overflow, gets set either by addition or `*2`; this
-    //   subsumes the case where subnormals are halved with loss of precision.
+    // - `OVERFLOW`: `half_a + half_b` never overflows, and if any input is infinite `OVERFLOW` is
+    //   not set either.
+    // - `UNDERFLOW`: addition never underflows.
+    // - `INEXACT`: can only be caused by precision loss, always matches between `a/2 + b/2` and
+    //   `a + b` in absence of subnormals, and if subnormals are present we must have an infinite
+    //   input so it still matches.
     let half_sum = half_a + half_b;
+
     if half_sum.is_infinite() {
+        // `a` or `b` must have been infinite.
         return half_sum;
     }
-    adjust_rounding_finite(half_a, half_b, half_sum, round, env) * T::TWO
+
+    // Shouldn't overflow or return infinity.
+    let half_sum = adjust_rounding_finite(half_a, half_b, half_sum, round, env);
+
+    // Sum saturating to `+-inf`. Raises overflow if `|half_sum| >= 2^maxe`, which is correct since
+    // we want to raise overflow regardless of whether we saturate to a finite value or infinity.
+    let sum = half_sum * T::TWO;
+    if sum.is_infinite() && !env.features().exceptions {
+        // Handled here because it's difficult to detect post-factum in `set_exceptions`.
+        env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
+    }
+
+    // Flooring saturates a very positive output to the largest representable float, but a very
+    // negative output to `-inf`, because `-inf` is <= every finite value. So we can't just compare
+    // absolute values here.
+    let limit = (T::MAX / T::TWO).nudge(1);
+    let saturate_to_finite = match round {
+        RoundingMode::ToNearest => unreachable!(),
+        RoundingMode::Floor => half_sum >= limit,
+        RoundingMode::Ceil => half_sum <= -limit,
+        RoundingMode::Trunc => true,
+        RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
+    };
+
+    if saturate_to_finite {
+        sum.nudge(-1)
+    } else {
+        sum
+    }
 }
 
 // On hosts with exceptions, this function raises `OVERFLOW` if rounding adjusts `sum` from finite
-// to infinite. On hosts without exceptions, `set_exceptions` is responsible for this instead.
+// to infinite (e.g. largest finite float plus a tiny value under ceil). On hosts without
+// exceptions, `set_exceptions` is responsible for this instead.
 fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, env: &mut Env) -> T {
     if !sum.is_finite() {
+        // Infinities are already handled by `add_with_rounding` gracefully for rounding modes where
+        // it matters.
         return sum;
     }
 
@@ -134,7 +187,7 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
             } else {
                 // All remaining ties are rounded towards zero and should be nudged away from zero,
                 // we just need to detect them.
-
+                //
                 // Since `sum` was rounded towards zero, the real value lies between `sum` and
                 // `sum.nudge(1)`. The latter can be infinite, but since infinity is even, this is
                 // guaranteed not to be a tie, and the comparison ends up working correctly. And
@@ -151,9 +204,11 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
 
     let sum = sum.nudge(nudge);
 
-    // Nudging the maximum value away from zero produces infinity, which is correct numerically, but
-    // doesn't automatically raise the overflow and inexact flags.
-    if env.features().exceptions && sum.is_infinite() {
+    // `sum` can become infinite during adjustment in floor, ceil, and trunc modes. For example,
+    // `floor` can adjust a large negative value to `-inf`. Notably, the direction of adjustment is
+    // always away from the direction in which values are saturated to finite floats, so the
+    // produced infinity is correct. We do need to set flags though.
+    if sum.is_infinite() && env.features().exceptions {
         env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
     }
 
@@ -183,6 +238,36 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
         if !is_exact {
             // Addition can never underflow, so we don't need to test for it.
             env.raise(Exceptions::INEXACT);
+
+            if env.features().round
+                && matches!(
+                    env.get_rounding_mode(),
+                    RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
+                )
+            {
+                // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor
+                // overflows in such a way if the true sum is `>= 2^(maxe+1)`. For hosts without
+                // rounding mode support, this is already handled by `add_with_rounding`, but for
+                // powerful hosts we need some extra wiring.
+                //
+                // We can use the same approach as in `add_with_rounding`, and luckily it's quite
+                // cheap if rounding modes are native. As a reminder, as long as we don't have
+                // subnormals, `a/2` and `b/2` are exact, `a/2 + b/2` can't overflow and is thus
+                // rounded just like `a + b` would be with unlimited exponent range, and so
+                // `|a/2 + b/2| >= 2^maxe` is equivalent to the overflow condition for `a + b`.
+                //
+                // The only new issue is that we can no longer assume that `a` and `b` are normal.
+                // Luckily, things still work out. For example, for floor:
+                // - Large finite value + positive subnormal returns the same value regardless of
+                //   the subnormal, so it doesn't matter that it effectively becomes a bit smaller.
+                // - Large finite value + negative subnormal returns the same value as long as the
+                //   subnormal doesn't fall to zero, but halving a negative subnormal under floor
+                //   mode retains this property.
+                let limit = (T::MAX / T::TWO).nudge(1);
+                if (a * T::HALF + b * T::HALF).abs() >= limit {
+                    env.raise(Exceptions::OVERFLOW);
+                }
+            }
         }
     } else {
         if sum.is_nan() {

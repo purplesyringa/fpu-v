@@ -1,31 +1,48 @@
 mod addition;
 
-use crate::{Env, HostFeatures, RoundingMode, native};
+use crate::{Env, Float, HostFeatures, RoundingMode, native};
+use core::fmt::Debug;
 
-fn diff_test<R>(
+fn diff_test<R: Copy + Eq + Debug>(
     round: RoundingMode,
     f: impl Fn(&mut Env) -> R,
-    compare: impl FnOnce(R, R),
     context: impl FnOnce() -> String,
 ) {
-    // Clear exceptions set by previous runs
-    native::set_env(native::Env::default());
+    let results = [
+        HostFeatures::X86,
+        HostFeatures::WASM,
+        HostFeatures::ONLY_ROUNDING,
+        HostFeatures::ONLY_EXCEPTIONS,
+    ]
+    .map(|features| {
+        // Clear exceptions and/or rounding mode set by previous runs
+        native::set_env(native::Env::default());
 
-    let mut x86_env = Env::new(HostFeatures::X86);
-    x86_env.set_rounding_mode(round);
-    let x86_out = f(&mut x86_env);
-    let x86_ex = x86_env.get_exceptions();
+        let mut env = Env::new(features);
+        env.set_rounding_mode(round);
+        (features, (f(&mut env), env.get_exceptions()))
+    });
 
-    // Reset host rounding mode to NE
-    native::set_env(native::Env::default());
-
-    let mut wasm_env = Env::new(HostFeatures::WASM);
-    wasm_env.set_rounding_mode(round);
-    let wasm_out = f(&mut wasm_env);
-    let wasm_ex = wasm_env.get_exceptions();
-
-    compare(x86_out, wasm_out);
-    if x86_ex != wasm_ex {
-        assert_eq!(x86_ex, wasm_ex, "{}", context());
+    let (features1, out1) = results[0];
+    for &(features2, out2) in &results[1..] {
+        if out1 != out2 {
+            assert_eq!(
+                out1,
+                out2,
+                "comparing {features1:?} vs {features2:?}, {}",
+                context()
+            );
+        }
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+struct BitwiseCmp<F>(F);
+
+impl<F: Float> PartialEq for BitwiseCmp<F> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl<F: Float> Eq for BitwiseCmp<F> {}

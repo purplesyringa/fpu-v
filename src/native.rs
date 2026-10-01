@@ -30,10 +30,12 @@ pub trait Native:
     + PartialOrd
     + PartialEq
 {
-    type Bits: Copy + BitXorAssign;
+    type Bits: Copy + BitXorAssign + Eq;
     const ZERO: Self;
     const HALF: Self;
     const TWO: Self;
+    const INFINITY: Self;
+    const MAX: Self;
     fn is_nan(self) -> bool;
     // Avoid defining `is_signaling_nan` or alike, because that's non-deterministic based on the
     // platform (since MIPS uses an inverted representation). Use the method on `types::*` instead.
@@ -54,6 +56,8 @@ macro_rules! define_methods {
             const ZERO: Self = Self(0.0);
             const HALF: Self = Self(0.5);
             const TWO: Self = Self(2.0);
+            const INFINITY: Self = Self($native::INFINITY);
+            const MAX: Self = Self($native::MAX);
             fn is_nan(self) -> bool {
                 self.0.is_nan()
             }
