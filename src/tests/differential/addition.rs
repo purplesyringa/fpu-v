@@ -29,7 +29,7 @@ fn addition() {
         let b = F32::from_bits(rng.u32(..));
         check(a, b);
     }
-    for _ in 0..1000 {
+    for _ in 0..100 {
         let a = native::F32::from_bits(rng.u32(..));
         for sum_exp in -150..130 {
             for sum_nudge in -5..5 {

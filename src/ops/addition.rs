@@ -101,14 +101,14 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
     }
 
-    // Flooring saturates a very positive output to the largest representable float, but a very
-    // negative output to `-inf`, because `-inf` is <= every finite value. So we can't just compare
-    // absolute values here.
     let saturate_to_finite = match round {
         RoundingMode::ToNearest => unreachable!(),
+        // Flooring saturates a very positive output to the largest representable float, but a very
+        // negative output to `-inf`, because `-inf` is <= every finite value. So we can't just
+        // compare absolute values here.
         RoundingMode::Floor => half_sum >= T::TWOP_MAXE,
         RoundingMode::Ceil => half_sum <= -T::TWOP_MAXE,
-        RoundingMode::Trunc => true,
+        RoundingMode::Trunc => half_sum.abs() >= T::TWOP_MAXE,
         RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
     };
 
