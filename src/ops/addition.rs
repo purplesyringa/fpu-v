@@ -1,16 +1,26 @@
 use crate::{Env, Exceptions, Float, RoundingMode, native::Native};
 
 pub fn add<T: Float>(a: T, b: T, env: &mut Env) -> T {
-    // Pass the original emulated floats so that they can be tested for sNaN without involving
-    // platform-specific shenanigans -- see various comments in `native` and `types` for why
-    // `is_signaling_nan` cannot be defined on `Native` directly.
-    T::from_native_canonicalizing_nan(do_add(env.to_native(a), env.to_native(b), a, b, env))
+    let out = do_add(
+        env.to_native(a),
+        env.to_native(b),
+        // Pass the original emulated floats so that they can be tested for sNaN without involving
+        // platform-specific shenanigans -- see various comments in `native` and `types` for why
+        // `is_signaling_nan` cannot be defined on `Native` directly.
+        a,
+        b,
+        env,
+    );
+    // `do_add` never returns inputs directly without applying some kind of FP operation to them, so
+    // NaNs are autocanonicalized on platforms that support that.
+    env.from_native_optionally_canonicalizing_nan(out)
 }
 
 pub fn sub<T: Float>(a: T, b: T, env: &mut Env) -> T {
     // IEEE-754 says `a - b` is equivalent to `a + (-b)`. The compiler should be able to rewrite
     // the fast path of `do_add` to optimize out the negation. `-b` also doesn't set exceptions.
-    T::from_native_canonicalizing_nan(do_add(env.to_native(a), -env.to_native(b), a, b, env))
+    let out = do_add(env.to_native(a), -env.to_native(b), a, b, env);
+    env.from_native_optionally_canonicalizing_nan(out)
 }
 
 fn do_add<T: Native, F: Float>(a: T, b: T, float1: F, float2: F, env: &mut Env) -> T {
@@ -48,6 +58,8 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         // rounding mode, and the remaining rounding modes never introduce new infinities.
         return adjust_rounding_finite(a, b, sum, round, env);
     }
+
+    core::hint::cold_path();
 
     // Flooring is defined as taking the largest representable float less than or equal to the exact
     // value. Notably, this means that if `a` and `b` are large finite numbers, `floor(a + b)` is
@@ -112,11 +124,7 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
     };
 
-    if saturate_to_finite {
-        sum.nudge(-1)
-    } else {
-        sum
-    }
+    sum.nudge(if saturate_to_finite { -1 } else { 0 })
 }
 
 // On hosts with exceptions, this function raises `OVERFLOW` if rounding adjusts `sum` from finite

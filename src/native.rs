@@ -160,6 +160,9 @@ macro_rules! define_binop {
             type Output = Self;
 
             fn $method(self, rhs: Self) -> Self {
+                #[cfg(feature = "explore")]
+                return Self($trait::$method(self.0, rhs.0));
+
                 let mut out = Self(0.0);
                 let mut env = get_env().to_mxcsr();
                 unsafe {
@@ -194,6 +197,9 @@ macro_rules! define_comparison {
     ($ty:ident => $insn:ident) => {
         impl PartialOrd for $ty {
             fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
+                #[cfg(feature = "explore")]
+                return self.0.partial_cmp(&rhs.0);
+
                 let mut out = Some(Ordering::Greater);
                 let mut env = get_env().to_mxcsr();
                 unsafe {
@@ -217,10 +223,33 @@ macro_rules! define_comparison {
                 set_env(Env::from_mxcsr(env));
                 out
             }
+
+            #[cfg(feature = "explore")]
+            fn lt(&self, rhs: &Self) -> bool {
+                self.0 < rhs.0
+            }
+
+            #[cfg(feature = "explore")]
+            fn le(&self, rhs: &Self) -> bool {
+                self.0 <= rhs.0
+            }
+
+            #[cfg(feature = "explore")]
+            fn gt(&self, rhs: &Self) -> bool {
+                self.0 > rhs.0
+            }
+
+            #[cfg(feature = "explore")]
+            fn ge(&self, rhs: &Self) -> bool {
+                self.0 >= rhs.0
+            }
         }
 
         impl PartialEq for $ty {
             fn eq(&self, rhs: &Self) -> bool {
+                #[cfg(feature = "explore")]
+                return self.0 == rhs.0;
+
                 self.partial_cmp(rhs) == Some(Ordering::Equal)
             }
         }

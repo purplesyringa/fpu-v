@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 bitflags = "2.13.2"
 fastrand = { version = "2.5.0", default-features = false }
+
+[features]
+explore = []

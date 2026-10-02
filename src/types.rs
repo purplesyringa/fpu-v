@@ -45,9 +45,13 @@ pub trait Float: Copy {
     /// Convert from a native value, canonicalizing `NaN` payload.
     fn from_native_canonicalizing_nan(x: Self::Native) -> Self;
 
-    // Avoid defining `from_native_preserving_nan` thoughtlessly -- what semantics should it have
-    // wrt. NaN quietness in presence of MIPS? Similarly, avoid defining `to_native` -- use
-    // `Env::to_native` instead.
+    /// Convert from a native value, preserving `NaN` payload.
+    ///
+    /// Note that on hosts with inverted `NaN` quietness, like MIPS, this will preserve the bitwise
+    /// value of the bit, not its meaning.
+    fn from_native_transmuting_nan(x: Self::Native) -> Self;
+
+    // Avoid defining `to_native` -- use `Env::to_native` instead.
 
     // /// Convert to a native value.
     // ///
@@ -95,6 +99,10 @@ macro_rules! define_methods {
                 } else {
                     Self(x.to_bits())
                 }
+            }
+
+            fn from_native_transmuting_nan(x: Self::Native) -> Self {
+                Self(x.to_bits())
             }
 
             // fn to_native_transmuting_nan(self) -> Self::Native {
@@ -150,6 +158,8 @@ pub struct HostFeatures {
     pub rmm: bool,
     /// Host has an inverted definition of qNaN vs sNaN.
     pub inverted_nan_quietness: bool,
+    /// Host automatically canonicalizes NaN on FP operations.
+    pub nan_canonicalization: bool,
 }
 
 bitflags! {
@@ -262,6 +272,19 @@ impl Env {
         }
     }
 
+    /// Convert a native value to a float, canonicalizing `NaN` payload if the host doesn't
+    /// canonicalize NaNs on FP operations automatically.
+    ///
+    /// Note that this function shouldn't be used if an input is passed to the output directly
+    /// without involving an FP operation.
+    pub fn from_native_optionally_canonicalizing_nan<F: Float>(&self, x: F::Native) -> F {
+        if self.features.nan_canonicalization {
+            F::from_native_transmuting_nan(x)
+        } else {
+            F::from_native_canonicalizing_nan(x)
+        }
+    }
+
     /// Convert a float to a native value, possibly naturalizing `NaN`.
     ///
     /// Some environments (MIPS and PA-RISC) have a flipped definition of the quietness NaN bit,
@@ -289,6 +312,7 @@ impl HostFeatures {
         round: true,
         rmm: false,
         inverted_nan_quietness: false,
+        nan_canonicalization: false,
     };
 
     pub const WASM: Self = Self {
@@ -296,6 +320,7 @@ impl HostFeatures {
         round: false,
         rmm: false,
         inverted_nan_quietness: false,
+        nan_canonicalization: false,
     };
 
     pub const ONLY_ROUNDING: Self = Self {
@@ -303,6 +328,7 @@ impl HostFeatures {
         round: true,
         rmm: false,
         inverted_nan_quietness: false,
+        nan_canonicalization: false,
     };
 
     pub const ONLY_EXCEPTIONS: Self = Self {
@@ -310,5 +336,6 @@ impl HostFeatures {
         round: false,
         rmm: false,
         inverted_nan_quietness: false,
+        nan_canonicalization: false,
     };
 }
