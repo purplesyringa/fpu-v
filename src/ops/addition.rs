@@ -46,8 +46,6 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
     if !sum.is_infinite() {
         // Keep the exceptions from `a + b`, because everything except `OVERFLOW` is unaffected by
         // rounding mode, and the remaining rounding modes never introduce new infinities.
-        // XXX: is underflow affected by rounding mode? IEEE-754 seems to imply "yes", but I
-        // couldn't figure out how it's affected
         return adjust_rounding_finite(a, b, sum, round, env);
     }
 
@@ -153,6 +151,11 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
             if error < T::ZERO {
                 // A zero with an error towards -inf must be -0, so this nudges zero correctly.
                 if sum > T::ZERO { -1 } else { 1 }
+            } else if error == T::ZERO && sum == T::ZERO {
+                // Special case: IEEE-754 requires floor(x - x) to return -0, not +0 like other
+                // rounding modes. We can't just nudge by `-1` here to cross the sign boundary
+                // because that'd convert `+0` to `NaN` and not `-0`.
+                return -T::ZERO;
             } else {
                 0
             }
