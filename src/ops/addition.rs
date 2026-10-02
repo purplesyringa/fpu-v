@@ -280,8 +280,11 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
                 env.raise(Exceptions::INVALID);
             }
         } else {
-            // IEEE-754 says overflow raises inexact as well.
-            env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
+            // IEEE-754 says infinity propagation doesn't raise invalid operation, only newly
+            // arising infinities do.
+            if !(a.is_infinite() || b.is_infinite()) {
+                env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
+            }
         }
     }
 }
