@@ -31,6 +31,7 @@ pub trait Float: Copy {
     type Native: Native;
 
     const CANONICAL_NAN: Self;
+    const CANONICAL_SIGNALING_NAN: Self;
     const NAN_QUIETNESS_BIT: <Self::Native as Native>::Bits;
 
     /// Bitcast from an integer value.
@@ -77,6 +78,7 @@ macro_rules! define_methods {
             type Native = native::$ty;
 
             const CANONICAL_NAN: Self = Self($nan);
+            const CANONICAL_SIGNALING_NAN: Self = Self($nan ^ $quietness_bit);
             const NAN_QUIETNESS_BIT: <Self::Native as Native>::Bits = $quietness_bit;
 
             fn from_bits(x: <Self::Native as Native>::Bits) -> Self {
