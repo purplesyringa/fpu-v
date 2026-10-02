@@ -36,6 +36,7 @@ pub trait Native:
     const TWO: Self;
     const INFINITY: Self;
     const MAX: Self;
+    const MIN_POSITIVE: Self; // smallest positive *normal* value
     const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
     fn is_nan(self) -> bool;
     // Avoid defining `is_signaling_nan` or alike, because that's non-deterministic based on the
@@ -59,6 +60,7 @@ macro_rules! define_methods {
             const TWO: Self = Self(2.0);
             const INFINITY: Self = Self($native::INFINITY);
             const MAX: Self = Self($native::MAX);
+            const MIN_POSITIVE: Self = Self($native::MIN_POSITIVE);
             const TWOP_MAXE: Self = Self(($native::MAX / 2.0).next_up());
             fn is_nan(self) -> bool {
                 self.0.is_nan()
