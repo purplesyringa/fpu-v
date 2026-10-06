@@ -45,8 +45,8 @@ fn addition() {
     for _ in 0..1000 {
         let a = F32::from_bits(rng.u32(..));
         for b in [
-            F32::from_native_canonicalizing_nan(native::F32::INFINITY),
-            F32::from_native_canonicalizing_nan(-native::F32::INFINITY),
+            F32::from_native_transmuting_nan(native::F32::INFINITY),
+            F32::from_native_transmuting_nan(-native::F32::INFINITY),
             F32::CANONICAL_NAN,
             F32::CANONICAL_SIGNALING_NAN,
         ] {

@@ -42,9 +42,6 @@ pub trait Float: Copy {
     /// Bitcast to an integer value.
     fn to_bits(self) -> <Self::Native as Native>::Bits;
 
-    /// Convert from a native value, canonicalizing `NaN` payload.
-    fn from_native_canonicalizing_nan(x: Self::Native) -> Self;
-
     /// Convert from a native value, preserving `NaN` payload.
     ///
     /// Note that on hosts with inverted `NaN` quietness, like MIPS, this will preserve the bitwise
@@ -91,14 +88,6 @@ macro_rules! define_methods {
 
             fn to_bits(self) -> <Self::Native as Native>::Bits {
                 self.0
-            }
-
-            fn from_native_canonicalizing_nan(x: Self::Native) -> Self {
-                if x.is_nan() {
-                    Self::CANONICAL_NAN
-                } else {
-                    Self(x.to_bits())
-                }
             }
 
             fn from_native_transmuting_nan(x: Self::Native) -> Self {
@@ -276,12 +265,18 @@ impl Env {
     /// canonicalize NaNs on FP operations automatically.
     ///
     /// Note that this function shouldn't be used if an input is passed to the output directly
-    /// without involving an FP operation.
-    pub fn from_native_optionally_canonicalizing_nan<F: Float>(&self, x: F::Native) -> F {
+    /// without involving an FP operation, since that can cause a non-canonical NaN (with the sign
+    /// bit set, or with the quiet bit off, or with a non-zero payload) to propagate. There is no
+    /// helper method for such a scenario because that isn't expected to arise.
+    pub fn from_native_canonicalizing_nan_after_op<F: Float>(&self, x: F::Native) -> F {
         if self.features.nan_canonicalization {
             F::from_native_transmuting_nan(x)
         } else {
-            F::from_native_canonicalizing_nan(x)
+            if x.is_nan() {
+                F::CANONICAL_NAN
+            } else {
+                F::from_bits(x.to_bits())
+            }
         }
     }
 

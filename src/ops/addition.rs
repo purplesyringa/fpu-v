@@ -17,14 +17,14 @@ pub fn add<T: Float>(a: T, b: T, env: &mut Env) -> T {
     );
     // `do_add` never returns inputs directly without applying some kind of FP operation to them, so
     // NaNs are autocanonicalized on platforms that support that.
-    env.from_native_optionally_canonicalizing_nan(out)
+    env.from_native_canonicalizing_nan_after_op(out)
 }
 
 pub fn sub<T: Float>(a: T, b: T, env: &mut Env) -> T {
     // IEEE-754 says `a - b` is equivalent to `a + (-b)`. The compiler should be able to rewrite
     // the fast path of `do_add` to optimize out the negation. `-b` also doesn't set exceptions.
     let out = do_add(env.to_native(a), -env.to_native(b), a, b, env);
-    env.from_native_optionally_canonicalizing_nan(out)
+    env.from_native_canonicalizing_nan_after_op(out)
 }
 
 fn do_add<T: Native, F: Float>(a: T, b: T, float1: F, float2: F, env: &mut Env) -> T {
