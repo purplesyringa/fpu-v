@@ -288,6 +288,42 @@ impl Env {
             } else {
                 F::from_bits(x.to_bits())
             }
+            // As written, this test compiles to a comparison and a (hopefully rarely taken) jump.
+            // This has ideal throughput and doesn't affect latency when the jump is well-predicted,
+            // but can cause trouble if branch prediction doesn't work as well.
+            //
+            // Depending on the architecture, there can be ways to improve this case at the cost of
+            // latency. How useful that is depends on the data, so I'm not sure which way is better:
+            // as always, benchmarking is your friend. The branchless implementations follow, mostly
+            // because it's an interesting puzzle if I'm being honest.
+            //
+            // AVX-512 provides a direct instruction for doing this:
+            //     vrangess x, CANONICAL_NAN, x, 4
+            // With AVX only, we can use:
+            //     vcmpunordss tmp, x, x
+            //     vblendvps x, x, CANONICAL_NAN, tmp
+            // ...and similarly for SSE 4.1. There is also a clever implementation for SSE,
+            // borrowing the approach V8 uses in vectorized fmin/fmax [1]:
+            //     xorps tmp, tmp
+            //     cmpunordss tmp, x
+            //     andps tmp, !CANONICAL_NAN
+            //     andnps x, tmp
+            // For non-NaN values, this is a no-op. For NaNs, `vcmpunordss` returns a full mask,
+            // `andps` reduces it to `!CANONICAL_NAN`, and `andnps` resolves to `x & CANONICAL_NAN`.
+            // This ends up producing the right value because `CANONICAL_NAN` is a submask of all
+            // quiet NaNs, and this function isn't invoked with signaling NaNs. This is essentially
+            // a pre-SSE 4.1 implementation of `blend`, but without having to mask twice by using
+            // the structure of the problem.
+            //
+            // On ARM, this is generally unnecessary, as VFPv3 has a "default NaN" mode where all
+            // NaN-producing arithmetic operations return a canonical NaN compatible with RISC-V,
+            // regardless of whether they are forwarding a qNaN input, handling sNaN input, or
+            // generating a new qNaN due to an invalid operation exception. [2] If that's not
+            // possible, a single-instruction implementation exists:
+            //     fminnm x, CANONICAL_NAN, x
+            //
+            // [1]: https://github.com/v8/v8/blob/19be4913881bb02c5d9b4f1c7547ee2d1273120b/src/compiler/backend/x64/code-generator-x64.cc#L2542
+            // [2]: https://support.arm.com/documentation/ddi0406/c/Application-Level-Architecture/Application-Level-Programmers--Model/Floating-point-data-types-and-arithmetic/NaN-handling-and-the-Default-NaN
         }
     }
 
