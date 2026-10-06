@@ -9,8 +9,8 @@ pub fn add<T: Float>(a: T, b: T, env: &mut Env) -> T {
         env.to_native(a),
         env.to_native(b),
         // Pass the original emulated floats so that they can be tested for sNaN without involving
-        // platform-specific shenanigans -- see various comments in `native` and `types` for why
-        // `is_signaling_nan` cannot be defined on `Native` directly.
+        // platform-specific shenanigans -- see various comments in `native` and `types` for the
+        // differences between `is_emulated_signaling_nan` and `is_native_signaling_nan`.
         a,
         b,
         env,
@@ -279,7 +279,7 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
             // IEEE-754 says qNaN propagation doesn't raise invalid operation, only sNaN or newly
             // arising NaNs do.
             if !(a.is_nan() || b.is_nan())
-                || (float1.is_signaling_nan() || float2.is_signaling_nan())
+                || (float1.is_emulated_signaling_nan() || float2.is_emulated_signaling_nan())
             {
                 env.raise(Exceptions::INVALID);
             }

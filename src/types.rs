@@ -32,7 +32,6 @@ pub trait Float: Copy {
 
     const CANONICAL_NAN: Self;
     const CANONICAL_SIGNALING_NAN: Self;
-    const NAN_QUIETNESS_BIT: <Self::Native as Native>::Bits;
 
     /// Bitcast from an integer value.
     ///
@@ -57,7 +56,11 @@ pub trait Float: Copy {
     // fn to_native_transmuting_nan(self) -> Self::Native;
 
     /// Check whether the value is a signaling `NaN`.
-    fn is_signaling_nan(self) -> bool;
+    ///
+    /// This is valid for values obtained from [`Float::from_native_transmuting_nan`], but not for
+    /// those obtained by bitwise cast after an FP operation, because NaN representation can differ
+    /// between RISC-V and the host. See [`Native::is_is_native_signaling_nan`] for more info.
+    fn is_emulated_signaling_nan(self) -> bool;
 }
 
 impl F32 {
@@ -74,13 +77,12 @@ impl F32 {
 }
 
 macro_rules! define_methods {
-    ($ty:ident => nan = $nan:literal, signaling = $signaling:expr, quietness_bit = $quietness_bit:literal) => {
+    ($ty:ident => nan = $nan:literal, signaling = $signaling:expr) => {
         impl Float for $ty {
             type Native = native::$ty;
 
             const CANONICAL_NAN: Self = Self($nan);
-            const CANONICAL_SIGNALING_NAN: Self = Self($nan ^ $quietness_bit);
-            const NAN_QUIETNESS_BIT: <Self::Native as Native>::Bits = $quietness_bit;
+            const CANONICAL_SIGNALING_NAN: Self = Self($nan ^ Self::Native::NAN_QUIETNESS_BIT);
 
             fn from_bits(x: <Self::Native as Native>::Bits) -> Self {
                 Self(x)
@@ -98,7 +100,7 @@ macro_rules! define_methods {
             //     Self::Native::from_bits(self.0)
             // }
 
-            fn is_signaling_nan(self) -> bool {
+            fn is_emulated_signaling_nan(self) -> bool {
                 $signaling.contains(&((self.to_bits() << 1) >> 1))
             }
         }
@@ -117,8 +119,8 @@ macro_rules! define_methods {
     };
 }
 
-define_methods!(F32 => nan = 0x7fc00000, signaling = 0x7f800000..0x7fc00000, quietness_bit = 0x400000);
-define_methods!(F64 => nan = 0x7ff8000000000000, signaling = 0x7ff0000000000000..0x7ff8000000000000, quietness_bit = 0x8000000000000);
+define_methods!(F32 => nan = 0x7fc00000, signaling = 0x7f800000..0x7fc00000);
+define_methods!(F64 => nan = 0x7ff8000000000000, signaling = 0x7ff0000000000000..0x7ff8000000000000);
 
 /// Floating-point environment.
 ///
@@ -147,7 +149,8 @@ pub struct HostFeatures {
     pub rmm: bool,
     /// Host has an inverted definition of qNaN vs sNaN.
     pub inverted_nan_quietness: bool,
-    /// Host automatically canonicalizes NaN on FP operations.
+    /// Host automatically canonicalizes NaN on FP operations. This means that it produces a bitwise
+    /// value equivalent to the RISC-V NaN, not that it produces something with similar semantics!
     pub nan_canonicalization: bool,
 }
 
@@ -269,6 +272,14 @@ impl Env {
     /// bit set, or with the quiet bit off, or with a non-zero payload) to propagate. There is no
     /// helper method for such a scenario because that isn't expected to arise.
     pub fn from_native_canonicalizing_nan_after_op<F: Float>(&self, x: F::Native) -> F {
+        // This check both validates that this function is not directly applied to function inputs
+        // without passing through an FP op (bruteforce tests should eventually trigger such
+        // a condition with an sNaN input) and ensures that the NaN can be canonicalized
+        // efficiently.
+        assert!(
+            !x.is_native_signaling_nan(),
+            "unexpected signaling NaN after FP operation",
+        );
         if self.features.nan_canonicalization {
             F::from_native_transmuting_nan(x)
         } else {
@@ -288,14 +299,14 @@ impl Env {
     /// This function guarantees that the returned value behaves the same way as the correct value
     /// in *arithmetic*, but it doesn't actually invert the quietness bit if the host doesn't
     /// support exceptions, so the quietness of the resulting number may still be incorrect. Don't
-    /// check the quietness of the native value -- use [`Float::is_signaling_nan`] instead.
+    /// check the quietness of the native value -- use [`Float::is_emulated_signaling_nan`] instead.
     pub fn to_native<T: Float>(&self, x: T) -> T::Native {
         let mut bits = x.to_bits();
         if self.features.exceptions
             && self.features.inverted_nan_quietness
             && T::Native::from_bits(bits).is_nan()
         {
-            bits ^= T::NAN_QUIETNESS_BIT;
+            bits ^= T::Native::NAN_QUIETNESS_BIT;
         }
         T::Native::from_bits(bits)
     }

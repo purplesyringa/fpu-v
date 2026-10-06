@@ -37,9 +37,15 @@ pub trait Native:
     const MAX: Self;
     const MIN_POSITIVE: Self; // smallest positive *normal* value
     const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
+    const NAN_QUIETNESS_BIT: Self::Bits; // machine-independent, just 2^k
     fn is_nan(self) -> bool;
-    // Avoid defining `is_signaling_nan` or alike, because that's non-deterministic based on the
-    // platform (since MIPS uses an inverted representation). Use the method on `types::*` instead.
+    /// Checks whether the value represents a signaling NaN on the current machine.
+    ///
+    /// This can differ from whether the same bit sequence represents a signaling NaN in the
+    /// emulated RISC-V machine! Specifically, some platforms, like MIPS, have an inverted quietness
+    /// bit in the NaN representation. `is_native_signaling_nan` is intended to be used on native
+    /// operation outputs, [`Float::is_emulated_signaling_nan`] is intended for high-level inputs.
+    fn is_native_signaling_nan(self) -> bool;
     fn is_finite(self) -> bool;
     fn is_infinite(self) -> bool;
     fn is_sign_negative(self) -> bool;
@@ -51,7 +57,7 @@ pub trait Native:
 }
 
 macro_rules! define_methods {
-    ($ty:ident => $native:ident, $bits:ident) => {
+    ($ty:ident => $native:ident, $bits:ident, nan_quietness_bit = $nan_quietness_bit:literal) => {
         impl Native for $ty {
             type Bits = $bits;
             const ZERO: Self = Self(0.0);
@@ -61,8 +67,13 @@ macro_rules! define_methods {
             const MAX: Self = Self($native::MAX);
             const MIN_POSITIVE: Self = Self($native::MIN_POSITIVE);
             const TWOP_MAXE: Self = Self(($native::MAX / 2.0).next_up());
+            const NAN_QUIETNESS_BIT: Self::Bits = $nan_quietness_bit;
             fn is_nan(self) -> bool {
                 self.0.is_nan()
+            }
+            fn is_native_signaling_nan(self) -> bool {
+                // This bit check needs to be inverted on MIPS and such!
+                self.is_nan() && self.to_bits() & Self::NAN_QUIETNESS_BIT == 0
             }
             fn is_finite(self) -> bool {
                 self.0.is_finite()
@@ -104,8 +115,8 @@ macro_rules! define_methods {
     };
 }
 
-define_methods!(F32 => f32, u32);
-define_methods!(F64 => f64, u64);
+define_methods!(F32 => f32, u32, nan_quietness_bit = 0x400000);
+define_methods!(F64 => f64, u64, nan_quietness_bit = 0x8000000000000);
 
 /// Native floating-point environment.
 #[derive(Clone, Copy, Default)]
