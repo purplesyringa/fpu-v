@@ -27,8 +27,7 @@ pub trait Native:
     + Sub<Output = Self>
     + Mul<Output = Self>
     + Div<Output = Self>
-    + PartialOrd
-    + PartialEq
+    + Compare
 {
     type Bits: Copy + BitXorAssign + Eq;
     const ZERO: Self;
@@ -195,62 +194,51 @@ define_binop!(Sub(sub) for F64 => subsd);
 define_binop!(Mul(mul) for F64 => mulsd);
 define_binop!(Div(div) for F64 => divsd);
 
-macro_rules! define_comparison {
-    ($ty:ident => $insn:ident) => {
-        impl PartialOrd for $ty {
+pub trait Compare {
+    fn signaling_cmp(&self, rhs: &Self) -> Option<Ordering>;
+    fn quiet_cmp(&self, rhs: &Self) -> Option<Ordering>;
+    fn fast_cmp(&self, rhs: &Self) -> Ordering;
+    fn inner(&self) -> impl PartialOrd;
+}
+
+macro_rules! define_comparison_type {
+    ($(#[$meta:meta])* $ty:ident => $method:ident$(, $wrap:ident)?) => {
+        $(#[$meta])*
+        pub struct $ty<T>(pub T);
+
+        impl<T: Compare> PartialOrd for $ty<T> {
             fn partial_cmp(&self, rhs: &Self) -> Option<Ordering> {
                 #[cfg(feature = "explore")]
-                return self.0.partial_cmp(&rhs.0);
+                return self.0.inner().partial_cmp(&rhs.0.inner());
 
-                let mut out = Some(Ordering::Greater);
-                let mut env = get_env().to_mxcsr();
-                unsafe {
-                    asm!(
-                        "ldmxcsr [{2}]",
-                        concat!(stringify!($insn), " {0}, {1}"),
-                        "stmxcsr [{2}]",
-                        "ldmxcsr [{3}]", // don't forget to restore default environment to avoid UB
-                        "jp {4}",
-                        "je {5}",
-                        "jb {6}",
-                        in(xmm_reg) self.0,
-                        in(xmm_reg) rhs.0,
-                        in(reg) &mut env,
-                        in(reg) &0x1f80u32,
-                        label { out = None },
-                        label { out = Some(Ordering::Equal) },
-                        label { out = Some(Ordering::Less) },
-                    );
-                }
-                set_env(Env::from_mxcsr(env));
-                out
+                $($wrap)?(self.0.$method(&rhs.0))
             }
 
             #[cfg(feature = "explore")]
             fn lt(&self, rhs: &Self) -> bool {
-                self.0 < rhs.0
+                self.0.inner() < rhs.0.inner()
             }
 
             #[cfg(feature = "explore")]
             fn le(&self, rhs: &Self) -> bool {
-                self.0 <= rhs.0
+                self.0.inner() <= rhs.0.inner()
             }
 
             #[cfg(feature = "explore")]
             fn gt(&self, rhs: &Self) -> bool {
-                self.0 > rhs.0
+                self.0.inner() > rhs.0.inner()
             }
 
             #[cfg(feature = "explore")]
             fn ge(&self, rhs: &Self) -> bool {
-                self.0 >= rhs.0
+                self.0.inner() >= rhs.0.inner()
             }
         }
 
-        impl PartialEq for $ty {
+        impl<T: Compare> PartialEq for $ty<T> {
             fn eq(&self, rhs: &Self) -> bool {
                 #[cfg(feature = "explore")]
-                return self.0 == rhs.0;
+                return self.0.inner() == rhs.0.inner();
 
                 self.partial_cmp(rhs) == Some(Ordering::Equal)
             }
@@ -258,5 +246,73 @@ macro_rules! define_comparison {
     };
 }
 
-define_comparison!(F32 => ucomiss);
-define_comparison!(F64 => ucomisd);
+define_comparison_type!(
+    /// Comparisons that raise exceptions when qNaN is involved.
+    Signaling => signaling_cmp
+);
+define_comparison_type!(
+    /// Comparisons that don't raise exceptions when qNaN is involved.
+    Quiet => quiet_cmp
+);
+define_comparison_type!(
+    /// Comparisons that assume inputs are not NaN.
+    ///
+    /// Intended to be implemented either with quiet or signaling comparisons depending on which is
+    /// more efficient. The Rust emulation panics for testing purposes.
+    Fast => fast_cmp, Some
+);
+
+impl<T: Compare> Ord for Fast<T> {
+    fn cmp(&self, rhs: &Self) -> Ordering {
+        self.0.fast_cmp(&rhs.0)
+    }
+}
+
+impl<T: Compare> Eq for Fast<T> {}
+
+macro_rules! define_comparison {
+    ($name:ident => $signaling:ident, $quiet:ident) => {
+        impl Compare for $name {
+            define_comparison_method!(signaling_cmp => $signaling);
+            define_comparison_method!(quiet_cmp => $quiet);
+            fn fast_cmp(&self, rhs: &Self) -> Ordering {
+                self.inner().partial_cmp(&rhs.inner()).expect("NaN input to fast comparison")
+            }
+            fn inner(&self) -> impl PartialOrd {
+                self.0
+            }
+        }
+    };
+}
+
+macro_rules! define_comparison_method {
+    ($name:ident => $insn:ident) => {
+        fn $name(&self, rhs: &Self) -> Option<Ordering> {
+            let mut out = Some(Ordering::Greater);
+            let mut env = get_env().to_mxcsr();
+            unsafe {
+                asm!(
+                    "ldmxcsr [{2}]",
+                    concat!(stringify!($insn), " {0}, {1}"),
+                    "stmxcsr [{2}]",
+                    "ldmxcsr [{3}]", // don't forget to restore default environment to avoid UB
+                    "jp {4}",
+                    "je {5}",
+                    "jb {6}",
+                    in(xmm_reg) self.0,
+                    in(xmm_reg) rhs.0,
+                    in(reg) &mut env,
+                    in(reg) &0x1f80u32,
+                    label { out = None },
+                    label { out = Some(Ordering::Equal) },
+                    label { out = Some(Ordering::Less) },
+                );
+            }
+            set_env(Env::from_mxcsr(env));
+            out
+        }
+    };
+}
+
+define_comparison!(F32 => comiss, ucomiss);
+define_comparison!(F64 => comisd, ucomisd);

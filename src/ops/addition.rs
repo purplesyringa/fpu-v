@@ -1,4 +1,8 @@
-use crate::{Env, Exceptions, Float, RoundingMode, native::Native};
+use crate::{
+    Env, Exceptions, Float, RoundingMode,
+    native::{Fast, Native, Quiet},
+};
+use core::cmp::Ordering;
 
 pub fn add<T: Float>(a: T, b: T, env: &mut Env) -> T {
     let out = do_add(
@@ -64,8 +68,8 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
     //
     // The only issue with using `a/2` and `b/2` are underflows, which we have to handle separately.
     let limit = T::MIN_POSITIVE * T::TWO;
-    // XXX: NaN handling & signaling vs quiet comparisons
-    if a.abs() < limit || b.abs() < limit {
+    // Make sure not to trigger exceptions on NaN.
+    if Quiet(a.abs()) < Quiet(limit) || Quiet(b.abs()) < Quiet(limit) {
         core::hint::cold_path();
 
         // Adding a very small value to a finite value never overflows in NE mode, so `a + b`
@@ -81,13 +85,13 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
     // Sets the same flags as `a + b`, except for overflow.
     let half_sum = half_a + half_b;
 
-    if half_sum.is_infinite() {
-        // `a` or `b` must have been infinite, quit immediately so that we don't try to adjust it to
-        // a finite value or raise overflow.
+    if !half_sum.is_finite() {
+        // The addition returned `NaN`, or `a` or `b` must have been infinite, quit immediately so
+        // that we don't raise more exceptions or try to adjust it to a finite value.
         return half_sum;
     }
 
-    // Shouldn't overflow or return infinity.
+    // Shouldn't overflow or return non-finite values.
     let half_sum = adjust_rounding_finite(half_a, half_b, half_sum, round, env);
 
     // Almost a correct sum, except for saturating to `+-inf` instead of finite values. Raises
@@ -104,9 +108,9 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         // Flooring saturates a very positive output to the largest representable float, but a very
         // negative output to `-inf`, because `-inf` is <= every finite value. So we can't just
         // compare absolute values here and need per-mode logic.
-        RoundingMode::Floor => half_sum >= T::TWOP_MAXE,
-        RoundingMode::Ceil => half_sum <= -T::TWOP_MAXE,
-        RoundingMode::Trunc => half_sum.abs() >= T::TWOP_MAXE,
+        RoundingMode::Floor => Fast(half_sum) >= Fast(T::TWOP_MAXE),
+        RoundingMode::Ceil => Fast(half_sum) <= Fast(-T::TWOP_MAXE),
+        RoundingMode::Trunc => Fast(half_sum.abs()) >= Fast(T::TWOP_MAXE),
         RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
     };
 
@@ -132,20 +136,24 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
     // Computing this does not raise any exceptions because everything is exact.
     //
     // [1]: https://uwplse.org/2025/08/04/two-sum.html
-    let error = if a.abs() >= b.abs() {
+    let error_value = if Fast(a.abs()) >= Fast(b.abs()) {
         b - (sum - a)
     } else {
         a - (sum - b)
     };
 
+    // This can be merged into the calculation of `error`, removing one subtraction, for all modes
+    // except RMM, which requires computing the exact error.
+    let error = Fast(error_value).cmp(&Fast(T::ZERO));
+
     // +1 means away from zero, -1 means towards zero.
     let nudge = match round {
         RoundingMode::ToNearest => unreachable!(),
         RoundingMode::Floor => {
-            if error < T::ZERO {
+            if error == Ordering::Less {
                 // A zero with an error towards -inf must be -0, so this nudges zero correctly.
-                if sum > T::ZERO { -1 } else { 1 }
-            } else if error == T::ZERO && sum == T::ZERO {
+                if Fast(sum) > Fast(T::ZERO) { -1 } else { 1 }
+            } else if error == Ordering::Equal && Fast(sum) == Fast(T::ZERO) {
                 // Special case: IEEE-754 requires floor(x - x) to return -0, not +0 like other
                 // rounding modes. We can't just nudge by `-1` here to cross the sign boundary
                 // because that'd convert `+0` to `NaN` and not `-0`.
@@ -155,9 +163,9 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
             }
         }
         RoundingMode::Ceil => {
-            if error > T::ZERO {
+            if error == Ordering::Greater {
                 // A zero with an error towards +inf must be +0, so this nudges zero correctly.
-                if sum >= T::ZERO { 1 } else { -1 }
+                if Fast(sum) >= Fast(T::ZERO) { 1 } else { -1 }
             } else {
                 0
             }
@@ -167,16 +175,18 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
             // sign bit, because a value rounded to zero cannot have an error towards zero (as long
             // as rounding retains the sign). Don't optimize this with multiplication, it'll cause
             // precision issues and spurious flags.
-            if (error < T::ZERO && sum > T::ZERO) || (error > T::ZERO && sum < T::ZERO) {
+            if (error == Ordering::Less && Fast(sum) > Fast(T::ZERO))
+                || (error == Ordering::Greater && Fast(sum) < Fast(T::ZERO))
+            {
                 -1
             } else {
                 0
             }
         }
         RoundingMode::ToNearestTiesToMaxMagnitude => {
-            if error == T::ZERO
-                || (error < T::ZERO && sum > T::ZERO)
-                || (error > T::ZERO && sum < T::ZERO)
+            if error == Ordering::Equal
+                || (error == Ordering::Less && Fast(sum) > Fast(T::ZERO))
+                || (error == Ordering::Greater && Fast(sum) < Fast(T::ZERO))
             {
                 // Exact results and bias away from zero are already compliant with RMM.
                 0
@@ -189,7 +199,7 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
                 // guaranteed not to be a tie, and the comparison ends up working correctly. And
                 // since no floating-point operation here produces infinity from finite inputs, we
                 // don't need to avoid a spurious overflow.
-                if error * T::TWO == sum.nudge(1) - sum {
+                if Fast(error_value * T::TWO) == Fast(sum.nudge(1) - sum) {
                     1
                 } else {
                     0
@@ -215,7 +225,7 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
     if sum.is_finite() {
         // We avoid using 2Sum/Fast2Sum to compute the error because it assumes round-to-nearest,
         // while the rounding mode here can be arbitrary, so we use another approach.
-        let is_exact = sum - a == b && sum - b == a;
+        let is_exact = Fast(sum - a) == Fast(b) && Fast(sum - b) == Fast(a);
 
         // If the sum is exact, both subtractions are exact as well and comparisons return true.
         //
@@ -259,7 +269,7 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
                 // - Large finite value + negative subnormal returns the same value as long as the
                 //   subnormal doesn't fall to zero, but halving a negative subnormal under floor
                 //   mode retains this property.
-                if (a * T::HALF + b * T::HALF).abs() >= T::TWOP_MAXE {
+                if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(T::TWOP_MAXE) {
                     env.raise(Exceptions::OVERFLOW);
                 }
             }
