@@ -272,6 +272,20 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
                 if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(T::TWOP_MAXE) {
                     env.raise(Exceptions::OVERFLOW);
                 }
+                // This calculation (`a * 0.5 + b * 0.5`) can be optimized a little further. We can
+                // manually decrease the exponent with integer arithmetic, which is clearly correct
+                // except when `|a| < 2^(mine + 1)` (or similarly with `b`). The intended result in
+                // this case is always `false`, and it turns out that we always get there:
+                // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a denormal that is
+                //   slightly different, but still small enough not to affect anything.
+                // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum.
+                //   It can be an sNaN, which would raise an unexpected exception, but this function
+                //   is only used when there are no exceptions.
+                // - `a = 0` results in infinity, but adding a zero is always exact, so we don't end
+                //   up in this branch at all.
+                // The only reason I avoid doing this is that this is a slow path, so investing time
+                // in this is not very fruitful. But we can improve this if it ends up being useful
+                // elsewhere.
             }
         }
     } else {
