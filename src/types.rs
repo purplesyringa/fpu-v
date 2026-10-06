@@ -158,7 +158,7 @@ bitflags! {
     /// Floating-point exceptions.
     #[derive(Clone, Copy, Debug, Default, PartialEq)]
     pub struct Exceptions: u32 {
-        // Bit values choosen for similarity with x86 to make `native` easier to implement, they
+        // Bit values chosen for similarity with x86 to make `native` easier to implement, they
         // don't have to look this way in the C port.
         const INVALID = 1;
         const DIVIDE_BY_ZERO = 4;
