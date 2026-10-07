@@ -1,5 +1,6 @@
 use crate::{
     Env, Exceptions, Float, RoundingMode,
+    common::set_exceptions_non_finite,
     native::{Fast, Native, Quiet},
 };
 use core::cmp::Ordering;
@@ -222,87 +223,73 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
 }
 
 fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F, env: &mut Env) {
-    if sum.is_finite() {
-        // We avoid using 2Sum/Fast2Sum to compute the error because it assumes round-to-nearest,
-        // while the rounding mode here can be arbitrary, so we use another approach.
-        let is_exact = Fast(sum - a) == Fast(b) && Fast(sum - b) == Fast(a);
+    if !sum.is_finite() {
+        set_exceptions_non_finite(a, b, sum, float1, float2, env);
+        return;
+    }
 
-        // If the sum is exact, both subtractions are exact as well and comparisons return true.
-        //
-        // If the sum is inexact, we use a lemma from [1] to obtain the sign of the error:
-        //
-        //     Lemma 2.5. Let a and b be two binary FP numbers, with e_a>=e_b. Let s \in {RD(a+b),
-        //     RU(a+b)}. The number s-a is a floating-point number (which implies that it will be
-        //     computed exactly, with any rounding function).
-        //
-        // In a nutshell, this means that if `|a| >= |b|`, `sum - a` is exact, so `sum - a == b`
-        // fails, and symmetrically for `|a| <= |b|`, so at least one condition returns `false`.
-        //
-        // [1]: Sylvie Boldo, Stef Graillat, and Jean-Michel Muller. 2017. On the Robustness of the
-        //      2Sum and Fast2Sum Algorithms. ACM Trans. Math. Softw. 44, 1, Article 4 (March 2018),
-        //      14 pages. https://doi.org/10.1145/3054947
-        if !is_exact {
-            // Addition can never underflow, so we don't need to test for it.
-            env.raise(Exceptions::INEXACT);
+    // We avoid using 2Sum/Fast2Sum to compute the error because it assumes round-to-nearest, while
+    // the rounding mode here can be arbitrary, so we use another approach.
+    let is_exact = Fast(sum - a) == Fast(b) && Fast(sum - b) == Fast(a);
 
-            if env.features().round
-                && matches!(
-                    env.get_rounding_mode(),
-                    RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
-                )
-            {
-                // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor
-                // overflows in such a way if the true sum is `>= 2^(maxe+1)`. For hosts without
-                // rounding mode support, this is already handled by `add_with_rounding`, but for
-                // powerful hosts we need some extra wiring.
-                //
-                // We can use the same approach as in `add_with_rounding`, and luckily it's quite
-                // cheap if rounding modes are native. As a reminder, as long as we don't have
-                // subnormals, `a/2` and `b/2` are exact, `a/2 + b/2` can't overflow and is thus
-                // rounded just like `a + b` would be with unlimited exponent range, and so
-                // `|a/2 + b/2| >= 2^maxe` is equivalent to the overflow condition for `a + b`.
-                //
-                // The only new issue is that we can no longer assume that `a` and `b` are normal.
-                // Luckily, things still work out. For example, for floor:
-                // - Large finite value + positive subnormal returns the same value regardless of
-                //   the subnormal, so it doesn't matter that it effectively becomes a bit smaller.
-                // - Large finite value + negative subnormal returns the same value as long as the
-                //   subnormal doesn't fall to zero, but halving a negative subnormal under floor
-                //   mode retains this property.
-                if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(T::TWOP_MAXE) {
-                    env.raise(Exceptions::OVERFLOW);
-                }
-                // This calculation (`a * 0.5 + b * 0.5`) can be optimized a little further. We can
-                // manually decrease the exponent with integer arithmetic, which is clearly correct
-                // except when `|a| < 2^(mine + 1)` (or similarly with `b`). The intended result in
-                // this case is always `false`, and it turns out that we always get there:
-                // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a denormal that is
-                //   slightly different, but still small enough not to affect anything.
-                // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum.
-                //   It can be an sNaN, which would raise an unexpected exception, but this function
-                //   is only used when there are no exceptions.
-                // - `a = 0` results in infinity, but adding a zero is always exact, so we don't end
-                //   up in this branch at all.
-                // The only reason I avoid doing this is that this is a slow path, so investing time
-                // in this is not very fruitful. But we can improve this if it ends up being useful
-                // elsewhere.
+    // If the sum is exact, both subtractions are exact as well and comparisons return true.
+    //
+    // If the sum is inexact, we use a lemma from [1] to obtain the sign of the error:
+    //
+    //     Lemma 2.5. Let a and b be two binary FP numbers, with e_a>=e_b. Let s \in {RD(a+b),
+    //     RU(a+b)}. The number s-a is a floating-point number (which implies that it will be
+    //     computed exactly, with any rounding function).
+    //
+    // In a nutshell, this means that if `|a| >= |b|`, `sum - a` is exact, so `sum - a == b` fails,
+    // and symmetrically for `|a| <= |b|`, so at least one condition returns `false`.
+    //
+    // [1]: Sylvie Boldo, Stef Graillat, and Jean-Michel Muller. 2017. On the Robustness of the 2Sum
+    //      and Fast2Sum Algorithms. ACM Trans. Math. Softw. 44, 1, Article 4 (March 2018),
+    //      14 pages. https://doi.org/10.1145/3054947
+    if !is_exact {
+        // Addition can never underflow, so we don't need to test for it.
+        env.raise(Exceptions::INEXACT);
+
+        if env.features().round
+            && matches!(
+                env.get_rounding_mode(),
+                RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
+            )
+        {
+            // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows
+            // in such a way if the true sum is `>= 2^(maxe+1)`. For hosts without rounding mode
+            // support, this is already handled by `add_with_rounding`, but for powerful hosts we
+            // need some extra wiring.
+            //
+            // We can use the same approach as in `add_with_rounding`, and luckily it's quite cheap
+            // if rounding modes are native. As a reminder, as long as we don't have subnormals,
+            // `a/2` and `b/2` are exact, `a/2 + b/2` can't overflow and is thus rounded just like
+            // `a + b` would be with unlimited exponent range, and so `|a/2 + b/2| >= 2^maxe` is
+            // equivalent to the overflow condition for `a + b`.
+            //
+            // The only new issue is that we can no longer assume that `a` and `b` are normal.
+            // Luckily, things still work out. For example, for floor:
+            // - Large finite value + positive subnormal returns the same value regardless of
+            //   the subnormal, so it doesn't matter that it effectively becomes a bit smaller.
+            // - Large finite value + negative subnormal returns the same value as long as the
+            //   subnormal doesn't fall to zero, but halving a negative subnormal under floor mode
+            //   retains this property.
+            if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(T::TWOP_MAXE) {
+                env.raise(Exceptions::OVERFLOW);
             }
-        }
-    } else {
-        if sum.is_nan() {
-            // IEEE-754 says qNaN propagation doesn't raise invalid operation, only sNaN or newly
-            // arising NaNs do.
-            if !(a.is_nan() || b.is_nan())
-                || (float1.is_emulated_signaling_nan() || float2.is_emulated_signaling_nan())
-            {
-                env.raise(Exceptions::INVALID);
-            }
-        } else {
-            // IEEE-754 says infinity propagation doesn't raise invalid operation, only newly
-            // arising infinities do.
-            if !(a.is_infinite() || b.is_infinite()) {
-                env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
-            }
+            // This calculation (`a * 0.5 + b * 0.5`) can be optimized a little further. We can
+            // manually decrease the exponent with integer arithmetic, which is clearly correct
+            // except when `|a| < 2^(mine + 1)` (or similarly with `b`). The intended result in this
+            // case is always `false`, and it turns out that we always get there:
+            // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a denormal that is
+            //   slightly different, but still small enough not to affect anything.
+            // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum. It
+            //   can be an sNaN, which would raise an unexpected exception, but this function is
+            //   only used when there are no exceptions.
+            // - `a = 0` results in infinity, but adding a zero is always exact, so we don't end up
+            //   in this branch at all.
+            // I avoided doing this because this is a slow path, so investing time in this is not
+            // very fruitful. But we can improve this if it ends up being useful elsewhere.
         }
     }
 }
