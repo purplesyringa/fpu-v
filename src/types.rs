@@ -238,6 +238,10 @@ impl Env {
     }
 
     /// Get raised exceptions.
+    ///
+    /// This function shouldn't be used except for testing. Since exceptions accumulate, the
+    /// returned flags denote exceptions raised since the beginning of the execution, not during the
+    /// last operation, so using it in calculations can effectively trigger false positives.
     pub fn get_exceptions(&self) -> Exceptions {
         if self.features.exceptions {
             native::get_env().exceptions
