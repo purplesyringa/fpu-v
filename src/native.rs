@@ -63,6 +63,7 @@ pub trait Native:
     fn from_bits(bits: Self::Bits) -> Self;
     /// Add a value to the bitwise representation.
     fn nudge(self, offset: i8) -> Self;
+    fn bottom_bit(self) -> bool;
     /// Extract the exponent field of the bit value. Valid even for non-finite numbers.
     ///
     /// Note that the unbiased exponent is `biased_exponent - 1 - MIN_EXP`, not
@@ -124,6 +125,9 @@ macro_rules! define_methods {
             }
             fn nudge(self, offset: i8) -> Self {
                 Self::from_bits(self.to_bits().wrapping_add(offset as Self::Bits))
+            }
+            fn bottom_bit(self) -> bool {
+                self.to_bits() & 1 != 0
             }
             fn biased_exponent(self) -> u32 {
                 ((self.to_bits() & Self::EXPONENT_MASK) >> Self::MANTISSA_DIGITS) as u32

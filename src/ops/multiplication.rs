@@ -55,7 +55,7 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     //            subnormals                            normals
     //
     // Among them, products that are closer to the midpoint between `2^mine` and the previous
-    // denormal (`mid`), than to `2^mine`, round to that midpoint with an unlimited exponent and
+    // subnormal (`mid`), than to `2^mine`, round to that midpoint with an unlimited exponent and
     // thus underflow "after rounding", but round to normals with a limited exponent:
     //
     //                            prev  mid  2^mine
@@ -264,18 +264,13 @@ fn is_exact_without_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> boo
     // number due to the rounding mode being weird, which is *slightly* below `bit_b * 2`
     // mathematically, but that's enough for the check to fail.
     //
-    // So we also nudge `bit_b * 2` up by 1:
-    // - For `bit_b * 2` rounded up to the largest finite value, this nudges it to infinity.
-    // - For `bit_b * 2` rounded up to infinity, this nudges it to a (likely signaling) NaN, which
-    //   forces us to write the comparison carefully. We use a quiet comparison despite being on
-    //   a path without exceptions, because fast comparisons assert lack of NaNs for more thorough
-    //   testing; the C port should use a fast comparison.
-    // - In the remaining cases, this slightly increases the value, up to 50% in case where `bit_b`
-    //   is the smallest subnormal, which causes `bit_a * (bit_b * 2)` to increase by the same
-    //   percentage, and since we're only dealing with powers of two, any increase below 100%
-    //   doesn't break anything despite looking scary.
+    // So we need a small adjustment there as well. Note that we can't just nudge the value up by 1
+    // unconditionally: while it seems like `(bit_b * 2).nudge(1)` can be larger than `bit_b * 2`
+    // only by 50% at worst (when `bit_b` is the smallest subnormal), this stops being true once
+    // it's multiplied by `bit_a`, e.g. under ceiling we can get a 100% increase compared to
+    // `bit_a * (bit_b * 2)`.
     //
-    // Notes:
+    // More notes:
     //
     // Multiplying by 2 and not `2^mantissa_digits`, which would simplify some logic, is necessary,
     // because even 4 allows `b = 2^maxe * (1 + 0.5)` to cause an inexact product while overflowing
@@ -288,7 +283,9 @@ fn is_exact_without_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> boo
     //
     // `bit_product * 2` doesn't overflow because it's `lowest_bit_fit` and not `lowest_bit_set`, so
     // its upper bound is determined by the lowest bit of the mantissa, not its hidden bit.
-    !(Quiet((bit_a * (bit_b * T::TWO).nudge(1)).abs()) < Quiet(bit_product * T::TWO))
+    let bit_b2 = bit_b * T::TWO;
+    let bit_b2 = bit_b2.nudge(bit_b2.bottom_bit() as i8); // largest finite value -> infinity
+    !(Quiet((bit_a * bit_b2).abs()) < Quiet(bit_product * T::TWO))
 }
 
 fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
