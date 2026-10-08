@@ -469,5 +469,5 @@ fn lowest_bit_fit_abs<T: Native>(x: T) -> T {
     }
 
     // Bit twiddling-only implementation returning the index `k`:
-    //     x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXP - T::MANTISSA_LEN as i32
+    //     x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXPONENT - T::MANTISSA_LEN as i32
 }

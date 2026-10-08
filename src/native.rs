@@ -42,7 +42,6 @@ pub trait Native:
     const EXPONENT_MASK: Self::Bits;
     const MANTISSA_MASK: Self::Bits;
     const MANTISSA_LEN: u32; // the number of digits in the mantissa, *excluding* the hidden bit
-    const MIN_EXP: i32;
     fn is_nan(self) -> bool;
     /// Checks whether the value represents a signaling NaN on the current machine.
     ///
@@ -62,8 +61,8 @@ pub trait Native:
     fn bottom_bit(self) -> bool;
     /// Extract the exponent field of the bit value. Valid even for non-finite numbers.
     ///
-    /// Note that the unbiased exponent is `biased_exponent - 1 - MIN_EXP`, not
-    /// `biased_exponent - MIN_EXP`, due to the presence of subnormal values.
+    /// Note that the unbiased exponent is `biased_exponent - 1 - MIN_EXPONENT`, not
+    /// `biased_exponent - MIN_EXPONENT`, due to the presence of subnormal values.
     fn biased_exponent(self) -> u32;
     fn mul_add(self, b: Self, c: Self) -> Self;
     /// Compute `self^n` without setting flags. Useful only for constants.
@@ -90,7 +89,6 @@ macro_rules! define_methods {
             const EXPONENT_MASK: Self::Bits = $exponent_mask; // f32::EXPONENT_MASK is unstable
             const MANTISSA_MASK: Self::Bits = $mantissa_mask; // f32::MANTISSA_MASK is unstable
             const MANTISSA_LEN: u32 = $native::MANTISSA_DIGITS - 1;
-            const MIN_EXP: i32 = $native::MIN_EXP;
             fn is_nan(self) -> bool {
                 self.0.is_nan()
             }
