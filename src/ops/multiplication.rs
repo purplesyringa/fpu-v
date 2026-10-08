@@ -78,10 +78,10 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     // overflow flag. Since we can't compute `a * b` immediately either, this forces branching on
     // `a` and `b` before doing anything.
 
-    let limit = T::TWO.powi(T::MANTISSA_DIGITS as i32);
+    let limit = T::TWO.powi(T::MANTISSA_LEN as i32);
     if a.abs().to_bits().max(b.abs().to_bits()) >= limit.to_bits() {
-        // `|a| >= 2^mantissa_digits` implies
-        //     |a * b| >= 2^(mantissa_digits + (mine - mantissa_digits)) = 2^mine,
+        // `|a| >= 2^mantissa_len` implies
+        //     |a * b| >= 2^(mantissa_len + (mine - mantissa_len)) = 2^mine,
         // i.e. no underflow of any kind, as long as `b != 0`. `b = 0` doesn't introduce any
         // underflows either. Checking both `a` and `b` ensures we get onto this fast path as often
         // as possible. The bitwise check instead of a floating-point one is a) faster, b) also
@@ -190,7 +190,7 @@ fn set_exceptions<T: Native, F: Float>(
     // `< 2^mine`. This covers both the subnormal rounded product and borderline rounded product
     // cases, as long as no overflow occurs during the calculation of `b * 2` -- and it can't occur
     // for small products, because `|a * b| < 2^mine` implies
-    //     |b| < 2^mine / |a| <= 2^mine / 2^(mine - mantissa_digits) = 2^mantissa_digits
+    //     |b| < 2^mine / |a| <= 2^mine / 2^(mine - mantissa_len) = 2^mantissa_len
     // ...as long as `a != 0`, which holds because the product is inexact. For `|a * b| >= 2^mine`
     // this can overflow, but it'll just result in `false`, which is correct.
     //
@@ -216,52 +216,52 @@ fn is_exact_with_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> bool {
 
     // The error `a * b - product` can't be expressed as a float in general, because it may be below
     // the subnormal range, causing us to erroneously claim an exact result. In the worst case, for
-    // `a` and `b` equal to the smallest subnormal, `2^(mine - mantissa_digits)`, the error may be
-    // `2^(mine - mantissa_digits)` times smaller than the smallest positive float!
+    // `a` and `b` equal to the smallest subnormal, `2^(mine - mantissa_len)`, the error may be
+    // `2^(mine - mantissa_len)` times smaller than the smallest positive float!
     //
     // We want to keep `fma(a, b, -product) == 0` as a fast path, though. This is correct regardless
-    // of rounding mode as long as the mathematical error is `>= 2^(mine - mantissa_digits)`. Giving
+    // of rounding mode as long as the mathematical error is `>= 2^(mine - mantissa_len)`. Giving
     // a good lower bound on the error is difficult in presence of subnormals that have a shortened
     // mantissa, but we can at least say that:
-    // - `a` has no bits below `floor(log2 |a|) - mantissa_digits`.
-    // - `b` has no bits below `floor(log2 |b|) - mantissa_digits`.
-    // - `a * b` thus has no bits below `floor(log2 |a|) + floor(log2 |b|) - 2 * mantissa_digits`,
+    // - `a` has no bits below `floor(log2 |a|) - mantissa_len`.
+    // - `b` has no bits below `floor(log2 |b|) - mantissa_len`.
+    // - `a * b` thus has no bits below `floor(log2 |a|) + floor(log2 |b|) - 2 * mantissa_len`,
     //   so the error, if present, must be at least 2 to the power of that value.
     //
     // This gives us
-    //     floor(log2 |a|) + floor(log2 |b|) - 2 * mantissa_digits >= mine - mantissa_digits
-    //     <=> floor(log2 |a|) + floor(log2 |b|) >= mine + mantissa_digits
+    //     floor(log2 |a|) + floor(log2 |b|) - 2 * mantissa_len >= mine - mantissa_len
+    //     <=> floor(log2 |a|) + floor(log2 |b|) >= mine + mantissa_len
     // ...as a sufficient condition for an error to not be rounded away (it can still be rounded,
     // but not straight to zero). Since:
     //     floor(log2 |a|) + floor(log2 |b|) >= floor(log2 |a| + log2 |b|) - 1
     //         = floor(log2 |a * b|) - 1,
     // the condition
-    //     floor(log2 |a * b|) >= mine + mantissa_digits + 1
+    //     floor(log2 |a * b|) >= mine + mantissa_len + 1
     // is also sufficient, and that is implied by
-    //     |a * b| >= 2^(mine + mantissa_digits + 1),
+    //     |a * b| >= 2^(mine + mantissa_len + 1),
     // which in turn is implied by
-    //     round(|a * b|) > 2^(mine + mantissa_digits + 1).
-    let limit = T::MIN_POSITIVE * T::TWO.powi(T::MANTISSA_DIGITS as i32) * T::TWO;
+    //     round(|a * b|) > 2^(mine + mantissa_len + 1).
+    let limit = T::MIN_POSITIVE * T::TWO.powi(T::MANTISSA_LEN as i32) * T::TWO;
     if Fast(product.abs()) > Fast(limit) {
         return Fast(env.mul_add(a, b, -product)) == Fast(T::ZERO);
     }
 
     // For the remaining values, we have
-    //     round(|a * b|) <= 2^(mine + mantissa_digits + 1),
-    // which is sufficient to guarantee that multiplying `product` by `2^-(mine - mantissa_digits)`
+    //     round(|a * b|) <= 2^(mine + mantissa_len + 1),
+    // which is sufficient to guarantee that multiplying `product` by `2^-(mine - mantissa_len)`
     // to make the error visible won't overflow:
-    //     (mine + mantissa_digits + 1) - (mine - mantissa_digits) = 2 * mantissa_digits + 1 < maxe
+    //     (mine + mantissa_len + 1) - (mine - mantissa_len) = 2 * mantissa_len + 1 < maxe
     // It also gives bounds on `a` and `b`, as long as the inputs are non-zero:
-    //     |a * b| < round(|a * b|) * (1 + 2^-mantissa_digits) < round(|a * b|) * 2
-    //         <= 2^(mine + mantissa_digits + 2)
-    //     |a| = |a * b| / |b| <= |a * b| / 2^(mine - mantissa_digits)
-    //         < 2^(mine + mantissa_digits + 2) / 2^(mine - mantissa_digits)
-    //         = 2^(2 * mantissa_digits + 2)
-    // ...and same for `|b|`. This gives `exp_a <= 2 * mantissa_digits + 1`, which doesn't allocate
-    // as much space for upscaling as `product`, but `2^(-(mine - mantissa_digits) / 2)` still fits:
-    //     2 * mantissa_digits + 1 - (mine - mantissa_digits) / 2
-    //     = 2.5 * mantissa_digits + 1 + (-mine) / 2
-    //     = 2.5 * mantissa_digits + 0.5 + maxe / 2 < maxe.
+    //     |a * b| < round(|a * b|) * (1 + 2^-mantissa_len) < round(|a * b|) * 2
+    //         <= 2^(mine + mantissa_len + 2)
+    //     |a| = |a * b| / |b| <= |a * b| / 2^(mine - mantissa_len)
+    //         < 2^(mine + mantissa_len + 2) / 2^(mine - mantissa_len)
+    //         = 2^(2 * mantissa_len + 2)
+    // ...and same for `|b|`. This gives `exp_a <= 2 * mantissa_len + 1`, which doesn't allocate as
+    // much space for upscaling as `product`, but `2^(-(mine - mantissa_len) / 2)` still fits:
+    //     2 * mantissa_len + 1 - (mine - mantissa_len) / 2
+    //     = 2.5 * mantissa_len + 1 + (-mine) / 2
+    //     = 2.5 * mantissa_len + 0.5 + maxe / 2 < maxe.
     // In practice we ceil the `/ 2` to load fewer constants.
     //
     // The above reasoning fails for zero inputs. For example, if `a = 0`, this can overflow when
@@ -334,7 +334,7 @@ fn is_exact_without_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> boo
     //
     // More notes:
     //
-    // Multiplying by 2 and not `2^mantissa_digits`, which would simplify some logic, is necessary,
+    // Multiplying by 2 and not `2^mantissa_len`, which would simplify some logic, is necessary,
     // because even 4 allows `b = 2^maxe * (1 + 0.5)` to cause an inexact product while overflowing
     // to `+inf` on the `* 4`.
     //
@@ -367,11 +367,11 @@ fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
     //
     // Lemma: for normal numbers `x` and `y`, `round(x * y)` has a maximum exponent of
     // `exp_x + exp_y + 1`, because in worst-case scenario:
-    //     x = 2^exp_x * (2 - 2^-mantissa_digits)
-    //     y = 2^exp_y * (2 - 2^-mantissa_digits)
+    //     x = 2^exp_x * (2 - 2^-mantissa_len)
+    //     y = 2^exp_y * (2 - 2^-mantissa_len)
     // ...we have:
-    //     x * y = 2^(exp_x + expy) * (2 - 2^-mantissa_digits)^2
-    //           <= 2^(exp_x + expy + 1) * (2 - 2^-mantissa_digits)
+    //     x * y = 2^(exp_x + expy) * (2 - 2^-mantissa_len)^2
+    //           <= 2^(exp_x + expy + 1) * (2 - 2^-mantissa_len)
     // ...and that implies it fits in `exp_x + exp_y + 1` regardless of the rounding mode.
     //
     // Now let `k = (maxe + 1) / 2`; this is always a whole number for standard floats. By the
@@ -389,9 +389,9 @@ fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
     // - Can we get a false positive? If `a * 2^-k` underflows, it rounds either to zero or to the
     //   smallest subnormal depending on the rounding mode. In the former case, the condition
     //   simplifies to `0 >= 1` and fails. In the latter case, we get:
-    //       2^(mine-mantissa_digits) * |b * 2^-k| < 2^(mine-mantissa_digits) * 2^(maxe+1-k)
-    //           = 2^((mine + maxe) - mantissa_digits + 1 - k)
-    //           = 2^(1 - mantissa_digits + 1 - k)
+    //       2^(mine-mantissa_len) * |b * 2^-k| < 2^(mine-mantissa_len) * 2^(maxe+1-k)
+    //           = 2^((mine + maxe) - mantissa_len + 1 - k)
+    //           = 2^(1 - mantissa_len + 1 - k)
     //           < 1,
     //   so the comparison fails again and the answer is no.
     if Fast(((a * T::TWOP_NEG_MAXE_SPLIT) * (b * T::TWOP_NEG_MAXE_SPLIT)).abs()) >= Fast(T::ONE) {
@@ -443,7 +443,7 @@ fn lowest_bit_set<T: Native>(x: T) -> T {
     // Bit twidding-only implementation returning the index `k`:
     //     let exp = x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXP; // max(1) for subnormals
     //     let ctz = (x.to_bits() | (T::MANTISSA_MASK + T::Bits::ONE)).trailing_zeros();
-    //     exp + ctz as i32 - T::MANTISSA_DIGITS as i32
+    //     exp + ctz as i32 - T::MANTISSA_LEN as i32
 }
 
 /// Returns the smallest value `2^k` such that `2^k` can be set in the finite input `x` given its
@@ -451,7 +451,7 @@ fn lowest_bit_set<T: Native>(x: T) -> T {
 fn lowest_bit_fit_abs<T: Native>(x: T) -> T {
     assert!(x.is_finite(), "non-finite input to lowest_bit_fit");
 
-    let factor = T::TWO.powi(-(T::MANTISSA_DIGITS as i32 - 1));
+    let factor = T::TWO.powi(-(T::MANTISSA_LEN as i32));
 
     let exp_bits = x.to_bits() & T::EXPONENT_MASK;
     if exp_bits == T::Bits::ZERO {
@@ -466,5 +466,5 @@ fn lowest_bit_fit_abs<T: Native>(x: T) -> T {
     }
 
     // Bit twiddling-only implementation returning the index `k`:
-    //     x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXP - T::MANTISSA_DIGITS as i32
+    //     x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXP - T::MANTISSA_LEN as i32
 }

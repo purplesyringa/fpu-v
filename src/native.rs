@@ -40,11 +40,11 @@ pub trait Native:
     const MIN_POSITIVE: Self; // smallest positive *normal* value
     const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
     const TWOP_NEG_MAXE_SPLIT: Self; // `2^(-(maxe + 1) / 2)`, used in multiplication
-    const FMA_UPSCALE_COEFF: Self; // `2^(ceil(-(mine - mantissa_digits) / 2))`
+    const FMA_UPSCALE_COEFF: Self; // `2^(ceil(-(mine - mantissa_len) / 2))`
     const NAN_QUIETNESS_BIT: Self::Bits; // machine-independent, just 2^k
     const EXPONENT_MASK: Self::Bits;
     const MANTISSA_MASK: Self::Bits;
-    const MANTISSA_DIGITS: u32;
+    const MANTISSA_LEN: u32; // the number of digits in the mantissa, *excluding* the hidden bit
     const MIN_EXP: i32;
     fn is_nan(self) -> bool;
     /// Checks whether the value represents a signaling NaN on the current machine.
@@ -97,7 +97,7 @@ macro_rules! define_methods {
             const NAN_QUIETNESS_BIT: Self::Bits = $nan_quietness_bit;
             const EXPONENT_MASK: Self::Bits = $exponent_mask; // f32::EXPONENT_MASK is unstable
             const MANTISSA_MASK: Self::Bits = $mantissa_mask; // f32::MANTISSA_MASK is unstable
-            const MANTISSA_DIGITS: u32 = $native::MANTISSA_DIGITS;
+            const MANTISSA_LEN: u32 = $native::MANTISSA_DIGITS - 1;
             const MIN_EXP: i32 = $native::MIN_EXP;
             fn is_nan(self) -> bool {
                 self.0.is_nan()
@@ -132,7 +132,7 @@ macro_rules! define_methods {
                 self.to_bits() & 1 != 0
             }
             fn biased_exponent(self) -> u32 {
-                ((self.to_bits() & Self::EXPONENT_MASK) >> Self::MANTISSA_DIGITS) as u32
+                ((self.to_bits() & Self::EXPONENT_MASK) >> Self::MANTISSA_LEN) as u32
             }
             fn mul_add(self, b: Self, c: Self) -> Self {
                 Self(self.0.mul_add(b.0, c.0))
