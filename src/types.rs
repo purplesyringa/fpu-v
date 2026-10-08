@@ -247,7 +247,7 @@ impl Env {
     /// returned flags denote exceptions raised since the beginning of the execution, not during the
     /// last operation, so using it in calculations can effectively trigger false positives.
     pub fn get_exceptions(&self) -> Exceptions {
-        if self.features.exceptions {
+        if self.features.exceptions && !cfg!(feature = "explore") {
             native::get_env().exceptions
         } else {
             self.exceptions
