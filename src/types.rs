@@ -119,8 +119,8 @@ macro_rules! define_methods {
     };
 }
 
-define_methods!(F32 => nan = 0x7fc00000, signaling = 0x7f800000..0x7fc00000);
-define_methods!(F64 => nan = 0x7ff8000000000000, signaling = 0x7ff0000000000000..0x7ff8000000000000);
+define_methods!(F32 => nan = 0x7fc00000, signaling = 0x7f800001..0x7fc00000);
+define_methods!(F64 => nan = 0x7ff8000000000000, signaling = 0x7ff0000000000001..0x7ff8000000000000);
 
 /// Floating-point environment.
 ///
