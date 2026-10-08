@@ -364,7 +364,7 @@ impl HostFeatures {
         rmm: false,
         inverted_nan_quietness: false,
         nan_canonicalization: false,
-        underflow_after_rounding: false,
+        underflow_after_rounding: true,
     };
 
     pub const WASM: Self = Self {
@@ -385,12 +385,12 @@ impl HostFeatures {
         underflow_after_rounding: false,
     };
 
-    pub const ONLY_EXCEPTIONS: Self = Self {
+    pub const ONLY_EXCEPTIONS_X86: Self = Self {
         exceptions: true,
         round: false,
         rmm: false,
         inverted_nan_quietness: false,
         nan_canonicalization: false,
-        underflow_after_rounding: false,
+        underflow_after_rounding: true,
     };
 }

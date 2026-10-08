@@ -13,7 +13,7 @@ fn diff_test<R: Copy + Eq + Debug>(
         HostFeatures::X86,
         // HostFeatures::WASM,
         HostFeatures::ONLY_ROUNDING,
-        // HostFeatures::ONLY_EXCEPTIONS,
+        // HostFeatures::ONLY_EXCEPTIONS_X86,
     ]
     .map(|features| {
         // Clear exceptions and/or rounding mode set by previous runs

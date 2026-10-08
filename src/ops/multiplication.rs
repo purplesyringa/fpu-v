@@ -27,6 +27,7 @@ pub fn mul<T: Float>(a: T, b: T, env: &mut Env) -> T {
     env.from_native_canonicalizing_nan_after_op(product)
 }
 
+// XXX: this function is untested because my hardware (x86) never uses it
 fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     // RISC-V detects underflow "after rounding", a condition which is defined as the mathematical
     // result having an absolute value below `2^mine` when rounded to a limited mantissa length, but
@@ -76,8 +77,6 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     // rounding *down* to `2^mine`). But we need to be careful about not accidentally raising the
     // overflow flag. Since we can't compute `a * b` immediately either, this forces branching on
     // `a` and `b` before doing anything.
-    //
-    // [1]: https://stackoverflow.com/questions/79864400/unexpected-underflow-state-after-floating-point-multiplication-has-a-subnormal-r#comment140939988_79866158
 
     if a.abs().to_bits().max(b.abs().to_bits()) >= T::TWOP_MANTISSA_DIGITS.to_bits() {
         // `|a| >= 2^mantissa_digits` implies
