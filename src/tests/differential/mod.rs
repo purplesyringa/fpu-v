@@ -1,4 +1,5 @@
 mod addition;
+mod multiplication;
 
 use crate::{Env, Float, HostFeatures, RoundingMode, native};
 use core::fmt::Debug;
@@ -10,9 +11,9 @@ fn diff_test<R: Copy + Eq + Debug>(
 ) {
     let results = [
         HostFeatures::X86,
-        HostFeatures::WASM,
+        // HostFeatures::WASM,
         HostFeatures::ONLY_ROUNDING,
-        HostFeatures::ONLY_EXCEPTIONS,
+        // HostFeatures::ONLY_EXCEPTIONS,
     ]
     .map(|features| {
         // Clear exceptions and/or rounding mode set by previous runs

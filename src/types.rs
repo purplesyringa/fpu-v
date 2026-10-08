@@ -152,6 +152,8 @@ pub struct HostFeatures {
     /// Host automatically canonicalizes NaN on FP operations. This means that it produces a bitwise
     /// value equivalent to the RISC-V NaN, not that it produces something with similar semantics!
     pub nan_canonicalization: bool,
+    /// Host detects underflow "after rounding", not "before rounding". Implies `exceptions`.
+    pub underflow_after_rounding: bool,
 }
 
 bitflags! {
@@ -362,6 +364,7 @@ impl HostFeatures {
         rmm: false,
         inverted_nan_quietness: false,
         nan_canonicalization: false,
+        underflow_after_rounding: false,
     };
 
     pub const WASM: Self = Self {
@@ -370,6 +373,7 @@ impl HostFeatures {
         rmm: false,
         inverted_nan_quietness: false,
         nan_canonicalization: false,
+        underflow_after_rounding: false,
     };
 
     pub const ONLY_ROUNDING: Self = Self {
@@ -378,6 +382,7 @@ impl HostFeatures {
         rmm: false,
         inverted_nan_quietness: false,
         nan_canonicalization: false,
+        underflow_after_rounding: false,
     };
 
     pub const ONLY_EXCEPTIONS: Self = Self {
@@ -386,5 +391,6 @@ impl HostFeatures {
         rmm: false,
         inverted_nan_quietness: false,
         nan_canonicalization: false,
+        underflow_after_rounding: false,
     };
 }

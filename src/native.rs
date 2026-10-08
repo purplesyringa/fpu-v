@@ -9,7 +9,7 @@ use core::arch::asm;
 use core::cell::Cell;
 use core::cmp::Ordering;
 use core::fmt::{self, Display, Formatter};
-use core::ops::{Add, BitXorAssign, Div, Mul, Neg, Sub};
+use core::ops::{Add, BitAnd, BitOr, BitXorAssign, Div, Mul, Neg, Not, Shr, Sub};
 
 /// Type-safe wrapper around `f32`.
 #[derive(Clone, Copy, Debug)]
@@ -29,15 +29,22 @@ pub trait Native:
     + Div<Output = Self>
     + Compare
 {
-    type Bits: Copy + BitXorAssign + Eq;
+    type Bits: Bits;
     const ZERO: Self;
     const HALF: Self;
+    const ONE: Self;
     const TWO: Self;
     const INFINITY: Self;
     const MAX: Self;
     const MIN_POSITIVE: Self; // smallest positive *normal* value
     const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
+    const TWOP_NEG_MAXE_SPLIT: Self; // `2^(-(maxe + 1) / 2)`, used in multiplication
     const NAN_QUIETNESS_BIT: Self::Bits; // machine-independent, just 2^k
+    const EXPONENT_MASK: Self::Bits;
+    const MANTISSA_MASK: Self::Bits;
+    const MANTISSA_DIGITS: u32;
+    const MIN_EXP: i32;
+    const TWOP_MANTISSA_DIGITS: Self; // 2^MANTISSA_DIGITS
     fn is_nan(self) -> bool;
     /// Checks whether the value represents a signaling NaN on the current machine.
     ///
@@ -54,20 +61,39 @@ pub trait Native:
     fn from_bits(bits: Self::Bits) -> Self;
     /// Add a value to the bitwise representation.
     fn nudge(self, offset: i8) -> Self;
+    /// Extract the exponent field of the bit value. Valid even for non-finite numbers.
+    ///
+    /// Note that the unbiased exponent is `biased_exponent - 1 - MIN_EXP`, not
+    /// `biased_exponent - MIN_EXP`, due to the presence of subnormal values.
+    fn biased_exponent(self) -> u32;
 }
 
 macro_rules! define_methods {
-    ($ty:ident => $native:ident, $bits:ident, nan_quietness_bit = $nan_quietness_bit:literal) => {
+    (
+        $ty:ident => $native:ident, $bits:ident,
+        twop_neg_maxe_split = $twop_neg_maxe_split:literal,
+        nan_quietness_bit = $nan_quietness_bit:literal,
+        exponent_mask = $exponent_mask:literal,
+        mantissa_mask = $mantissa_mask:literal,
+        twop_mantissa_digits = $twop_mantissa_digits:literal
+    ) => {
         impl Native for $ty {
             type Bits = $bits;
             const ZERO: Self = Self(0.0);
             const HALF: Self = Self(0.5);
+            const ONE: Self = Self(1.0);
             const TWO: Self = Self(2.0);
             const INFINITY: Self = Self($native::INFINITY);
             const MAX: Self = Self($native::MAX);
             const MIN_POSITIVE: Self = Self($native::MIN_POSITIVE);
             const TWOP_MAXE: Self = Self(($native::MAX / 2.0).next_up());
+            const TWOP_NEG_MAXE_SPLIT: Self = Self($twop_neg_maxe_split);
             const NAN_QUIETNESS_BIT: Self::Bits = $nan_quietness_bit;
+            const EXPONENT_MASK: Self::Bits = $exponent_mask; // f32::EXPONENT_MASK is unstable
+            const MANTISSA_MASK: Self::Bits = $mantissa_mask; // f32::MANTISSA_MASK is unstable
+            const MANTISSA_DIGITS: u32 = $native::MANTISSA_DIGITS;
+            const TWOP_MANTISSA_DIGITS: Self = Self($twop_mantissa_digits);
+            const MIN_EXP: i32 = $native::MIN_EXP;
             fn is_nan(self) -> bool {
                 self.0.is_nan()
             }
@@ -97,6 +123,9 @@ macro_rules! define_methods {
             fn nudge(self, offset: i8) -> Self {
                 Self::from_bits(self.to_bits().wrapping_add(offset as Self::Bits))
             }
+            fn biased_exponent(self) -> u32 {
+                ((self.to_bits() & Self::EXPONENT_MASK) >> Self::MANTISSA_DIGITS) as u32
+            }
         }
 
         impl Neg for $ty {
@@ -115,8 +144,54 @@ macro_rules! define_methods {
     };
 }
 
-define_methods!(F32 => f32, u32, nan_quietness_bit = 0x400000);
-define_methods!(F64 => f64, u64, nan_quietness_bit = 0x8000000000000);
+define_methods!(
+    F32 => f32, u32,
+    twop_neg_maxe_split = 5.421011e-20,
+    nan_quietness_bit = 0x400000,
+    exponent_mask = 0x7f800000,
+    mantissa_mask = 0x7fffff,
+    twop_mantissa_digits = 8388608.0
+);
+define_methods!(
+    F64 => f64, u64,
+    twop_neg_maxe_split = 7.458340731200207e-155,
+    nan_quietness_bit = 0x8000000000000,
+    exponent_mask = 0x7ff0000000000000,
+    mantissa_mask = 0xfffffffffffff,
+    twop_mantissa_digits = 4503599627370496.0
+);
+
+/// Common interface for `u32` and `u64`.
+pub trait Bits:
+    Copy
+    + BitXorAssign
+    + Add<Output = Self>
+    + BitAnd<Output = Self>
+    + BitOr<Output = Self>
+    + Shr<u32, Output = Self>
+    + Not<Output = Self>
+    + Eq
+    + Ord
+{
+    const ZERO: Self;
+    const ONE: Self;
+    fn trailing_zeros(self) -> u32;
+}
+
+macro_rules! define_bits {
+    ($ty:ident) => {
+        impl Bits for $ty {
+            const ZERO: Self = 0;
+            const ONE: Self = 1;
+            fn trailing_zeros(self) -> u32 {
+                self.trailing_zeros()
+            }
+        }
+    };
+}
+
+define_bits!(u32);
+define_bits!(u64);
 
 /// Native floating-point environment.
 #[derive(Clone, Copy, Default)]
