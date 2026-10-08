@@ -261,9 +261,12 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
         )
     {
         // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows in
-        // such a way if the true sum is `>= 2^(maxe+1)`. For hosts without rounding mode support,
-        // this is already handled by `add_with_rounding`, but for powerful hosts we need some extra
-        // wiring.
+        // such a way if the true sum is `>= 2^(maxe+1)`. Generally speaking, any sum with
+        // an absolute value `>= 2^(maxe+1)` overflows, but whenever it returns infinity it's easier
+        // to handle. IEEE-754 says overflow happens if the *rounded* value, assuming an unlimited
+        // exponent, doesn't fit, so what we actually want to check here is
+        // `|round(a + b)| >= 2^(maxe+1)`. For hosts without rounding mode support, this is already
+        // handled by `add_with_rounding`, but for powerful hosts we need some extra wiring.
         //
         // We can use the same approach as in `add_with_rounding`, and luckily it's quite cheap if
         // rounding modes are native. As a reminder, as long as we don't have subnormals, `a/2` and
