@@ -38,7 +38,6 @@ pub trait Native:
     const INFINITY: Self;
     const MIN_EXPONENT: i32; // smallest normal exponent, differs from std's `MIN_EXP`!
     const MAX_EXPONENT: i32; // largest normal exponent, differs from std's `MAX_EXP`!
-    const TWOP_NEG_MAXE_SPLIT: Self; // `2^(-(maxe + 1) / 2)`, used in multiplication
     const NAN_QUIETNESS_BIT: Self::Bits; // machine-independent, just 2^k
     const EXPONENT_MASK: Self::Bits;
     const MANTISSA_MASK: Self::Bits;
@@ -74,7 +73,6 @@ pub trait Native:
 macro_rules! define_methods {
     (
         $ty:ident => $native:ident, $bits:ident,
-        twop_neg_maxe_split = $twop_neg_maxe_split:literal,
         nan_quietness_bit = $nan_quietness_bit:literal,
         exponent_mask = $exponent_mask:literal,
         mantissa_mask = $mantissa_mask:literal
@@ -88,7 +86,6 @@ macro_rules! define_methods {
             const INFINITY: Self = Self($native::INFINITY);
             const MIN_EXPONENT: i32 = $native::MIN_EXP - 1;
             const MAX_EXPONENT: i32 = $native::MAX_EXP - 1;
-            const TWOP_NEG_MAXE_SPLIT: Self = Self($twop_neg_maxe_split);
             const NAN_QUIETNESS_BIT: Self::Bits = $nan_quietness_bit;
             const EXPONENT_MASK: Self::Bits = $exponent_mask; // f32::EXPONENT_MASK is unstable
             const MANTISSA_MASK: Self::Bits = $mantissa_mask; // f32::MANTISSA_MASK is unstable
@@ -155,14 +152,12 @@ macro_rules! define_methods {
 
 define_methods!(
     F32 => f32, u32,
-    twop_neg_maxe_split = 5.421011e-20,
     nan_quietness_bit = 0x400000,
     exponent_mask = 0x7f800000,
     mantissa_mask = 0x7fffff
 );
 define_methods!(
     F64 => f64, u64,
-    twop_neg_maxe_split = 7.458340731200207e-155,
     nan_quietness_bit = 0x8000000000000,
     exponent_mask = 0x7ff0000000000000,
     mantissa_mask = 0xfffffffffffff

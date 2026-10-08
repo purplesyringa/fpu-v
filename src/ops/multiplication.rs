@@ -396,7 +396,8 @@ fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
     //           = 2^(1 - mantissa_len + 1 - k)
     //           < 1,
     //   so the comparison fails again and the answer is no.
-    if Fast(((a * T::TWOP_NEG_MAXE_SPLIT) * (b * T::TWOP_NEG_MAXE_SPLIT)).abs()) >= Fast(T::ONE) {
+    let coeff = T::TWO.powi(-(T::MAX_EXPONENT + 1) / 2);
+    if Fast(((a * coeff) * (b * coeff)).abs()) >= Fast(T::ONE) {
         env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
     }
 }
