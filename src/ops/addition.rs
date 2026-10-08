@@ -246,50 +246,53 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
     // [1]: Sylvie Boldo, Stef Graillat, and Jean-Michel Muller. 2017. On the Robustness of the 2Sum
     //      and Fast2Sum Algorithms. ACM Trans. Math. Softw. 44, 1, Article 4 (March 2018),
     //      14 pages. https://doi.org/10.1145/3054947
-    if !is_exact {
-        // Addition can never underflow, so we don't need to test for it.
-        env.raise(Exceptions::INEXACT);
+    if is_exact {
+        return;
+    }
 
-        if env.features().round
-            && matches!(
-                env.get_rounding_mode(),
-                RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
-            )
-        {
-            // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows
-            // in such a way if the true sum is `>= 2^(maxe+1)`. For hosts without rounding mode
-            // support, this is already handled by `add_with_rounding`, but for powerful hosts we
-            // need some extra wiring.
-            //
-            // We can use the same approach as in `add_with_rounding`, and luckily it's quite cheap
-            // if rounding modes are native. As a reminder, as long as we don't have subnormals,
-            // `a/2` and `b/2` are exact, `a/2 + b/2` can't overflow and is thus rounded just like
-            // `a + b` would be with unlimited exponent range, and so `|a/2 + b/2| >= 2^maxe` is
-            // equivalent to the overflow condition for `a + b`.
-            //
-            // The only new issue is that we can no longer assume that `a` and `b` are normal.
-            // Luckily, things still work out. For example, for floor:
-            // - Large finite value + positive subnormal returns the same value regardless of
-            //   the subnormal, so it doesn't matter that it effectively becomes a bit smaller.
-            // - Large finite value + negative subnormal returns the same value as long as the
-            //   subnormal doesn't fall to zero, but halving a negative subnormal under floor mode
-            //   retains this property.
-            if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(T::TWOP_MAXE) {
-                env.raise(Exceptions::OVERFLOW);
-            }
-            // This calculation (`a * 0.5 + b * 0.5`) can be optimized a little further. We can
-            // manually decrease the exponent with integer arithmetic, which is clearly correct
-            // except when `|a| < 2^(mine + 1)` (or similarly with `b`). The intended result in this
-            // case is always `false`, and it turns out that we always get there:
-            // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a denormal that is
-            //   slightly different, but still small enough not to affect anything.
-            // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum. It
-            //   can be an sNaN, which would raise an unexpected exception, but this function is
-            //   only used when there are no exceptions.
-            // - `a = 0` results in infinity, but adding a zero is always exact, so we don't end up
-            //   in this branch at all.
-            // I avoided doing this because this is a slow path, so investing time in this is not
-            // very fruitful. But we can improve this if it ends up being useful elsewhere.
+    env.raise(Exceptions::INEXACT);
+
+    // Addition can never underflow, so we don't need to test for it.
+
+    if env.features().round
+        && matches!(
+            env.get_rounding_mode(),
+            RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
+        )
+    {
+        // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows in
+        // such a way if the true sum is `>= 2^(maxe+1)`. For hosts without rounding mode support,
+        // this is already handled by `add_with_rounding`, but for powerful hosts we need some extra
+        // wiring.
+        //
+        // We can use the same approach as in `add_with_rounding`, and luckily it's quite cheap if
+        // rounding modes are native. As a reminder, as long as we don't have subnormals, `a/2` and
+        // `b/2` are exact, `a/2 + b/2` can't overflow and is thus rounded just like `a + b` would
+        // be with unlimited exponent range, and so `|a/2 + b/2| >= 2^maxe` is equivalent to the
+        // overflow condition for `a + b`.
+        //
+        // The only new issue is that we can no longer assume that `a` and `b` are normal. Luckily,
+        // things still work out. For example, for floor:
+        // - Large finite value + positive subnormal returns the same value regardless of the
+        //   subnormal, so it doesn't matter that it effectively becomes a bit smaller.
+        // - Large finite value + negative subnormal returns the same value as long as the subnormal
+        //   doesn't fall to zero, but halving a negative subnormal under floor mode retains this
+        //   property.
+        if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(T::TWOP_MAXE) {
+            env.raise(Exceptions::OVERFLOW);
         }
+        // This calculation (`a * 0.5 + b * 0.5`) can be optimized a little further. We can manually
+        // decrease the exponent with integer arithmetic, which is clearly correct except when
+        // `|a| < 2^(mine + 1)` (or similarly with `b`). The intended result in this case is always
+        // `false`, and it turns out that we always get there:
+        // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a denormal that is slightly
+        //   different, but still small enough not to affect anything.
+        // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum. It can
+        //   be an sNaN, which would raise an unexpected exception, but this function is only used
+        //   when there are no exceptions.
+        // - `a = 0` results in infinity, but adding a zero is always exact, so we don't end up in
+        //   this branch at all.
+        // I avoided doing this because this is a slow path, so investing time in this is not very
+        // fruitful. But we can improve this if it ends up being useful elsewhere.
     }
 }
