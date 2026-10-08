@@ -1,5 +1,3 @@
-use std::f32::MANTISSA_DIGITS;
-
 use crate::{
     Env, Exceptions, Float, RoundingMode,
     common::set_exceptions_non_finite,

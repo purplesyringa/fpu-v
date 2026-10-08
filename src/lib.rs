@@ -5,7 +5,7 @@ mod native;
 
 mod common;
 
-mod ops;
+pub mod ops;
 
 pub mod explore;
 
