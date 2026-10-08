@@ -1,10 +1,10 @@
 # fpu-v
 
-This is in-progress test ground for [RVVM](https://github.com/LekKit/RVVM), which currently has a buggy FPU that is overrun with hotfixes doing anything but reducing the messiness.
+This is a work-in-progress implementation of a firm-FPU: it assumes that the host supports some basic floating-point operations, like what Wasm supports, and emulates a fully-fledged RISC-V FPU with exceptions, different rounding modes, FMA, etc. on top of it. The intention is that this should be faster than a soft-FPU in common cases.
 
-This collection of snippets provides a reference optimized RISC-V-compliant FPU implementation, including FMA, flags, and rounding modes, only requiring the host to support basic flagless round-to-nearest arithmetic.
+This repo is a test ground for [RVVM](https://github.com/LekKit/RVVM), which currently has a buggy FPU that is overrun with hotfixes doing anything but reducing the messiness.
 
-This is not a library, in the sense that it's not something you want to use directly: it uses x86-specific inline assembly as a polyfill for tests because Rust doesn't support floating-point environments, etc. The intention is that these calls are replaced with native C operators and `#pragma STDC FENV_ACCESS` in the C port, and this repo stays as a reference implementation where exhaustive tests can be run and commentary can be present.
+It's a *collection of snippets* rather than a library: it uses x86-specific inline assembly as a polyfill because Rust doesn't support floating-point environments, etc. It's designed for later inclusion into RVVM as a C port, at which point these calls can be replaced with native C operators and `#pragma STDC FENV_ACCESS`. This repo is a reference implementation where exhaustive tests can be run and commentary can be present.
 
 
 ## LLM policy
