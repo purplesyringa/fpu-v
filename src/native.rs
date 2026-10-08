@@ -36,7 +36,6 @@ pub trait Native:
     const ONE: Self;
     const TWO: Self;
     const INFINITY: Self;
-    const MAX: Self;
     const MIN_POSITIVE: Self; // smallest positive *normal* value
     const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
     const TWOP_NEG_MAXE_SPLIT: Self; // `2^(-(maxe + 1) / 2)`, used in multiplication
@@ -89,7 +88,6 @@ macro_rules! define_methods {
             const ONE: Self = Self(1.0);
             const TWO: Self = Self(2.0);
             const INFINITY: Self = Self($native::INFINITY);
-            const MAX: Self = Self($native::MAX);
             const MIN_POSITIVE: Self = Self($native::MIN_POSITIVE);
             const TWOP_MAXE: Self = Self(($native::MAX / 2.0).next_up());
             const TWOP_NEG_MAXE_SPLIT: Self = Self($twop_neg_maxe_split);
