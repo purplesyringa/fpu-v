@@ -8,8 +8,7 @@ use crate::{Exceptions, RoundingMode};
 use core::arch::asm;
 use core::cell::Cell;
 use core::cmp::Ordering;
-use core::fmt::Debug;
-use core::fmt::{self, Display, Formatter};
+use core::fmt::{self, Debug, Display, Formatter, LowerHex};
 use core::ops::{Add, BitAnd, BitOr, BitXorAssign, Div, Mul, Neg, Not, Shr, Sub};
 
 /// Type-safe wrapper around `f32`.
@@ -47,7 +46,6 @@ pub trait Native:
     const MANTISSA_MASK: Self::Bits;
     const MANTISSA_DIGITS: u32;
     const MIN_EXP: i32;
-    const TWOP_MANTISSA_DIGITS: Self; // 2^MANTISSA_DIGITS
     fn is_nan(self) -> bool;
     /// Checks whether the value represents a signaling NaN on the current machine.
     ///
@@ -71,6 +69,8 @@ pub trait Native:
     /// `biased_exponent - MIN_EXP`, due to the presence of subnormal values.
     fn biased_exponent(self) -> u32;
     fn mul_add(self, b: Self, c: Self) -> Self;
+    /// Compute `self^n` without setting flags. Useful only for constants.
+    fn powi(self, n: i32) -> Self;
 }
 
 macro_rules! define_methods {
@@ -80,8 +80,7 @@ macro_rules! define_methods {
         fma_upscale_coeff = $fma_upscale_coeff:literal,
         nan_quietness_bit = $nan_quietness_bit:literal,
         exponent_mask = $exponent_mask:literal,
-        mantissa_mask = $mantissa_mask:literal,
-        twop_mantissa_digits = $twop_mantissa_digits:literal
+        mantissa_mask = $mantissa_mask:literal
     ) => {
         impl Native for $ty {
             type Bits = $bits;
@@ -99,7 +98,6 @@ macro_rules! define_methods {
             const EXPONENT_MASK: Self::Bits = $exponent_mask; // f32::EXPONENT_MASK is unstable
             const MANTISSA_MASK: Self::Bits = $mantissa_mask; // f32::MANTISSA_MASK is unstable
             const MANTISSA_DIGITS: u32 = $native::MANTISSA_DIGITS;
-            const TWOP_MANTISSA_DIGITS: Self = Self($twop_mantissa_digits);
             const MIN_EXP: i32 = $native::MIN_EXP;
             fn is_nan(self) -> bool {
                 self.0.is_nan()
@@ -139,6 +137,9 @@ macro_rules! define_methods {
             fn mul_add(self, b: Self, c: Self) -> Self {
                 Self(self.0.mul_add(b.0, c.0))
             }
+            fn powi(self, n: i32) -> Self {
+                Self(self.0.powi(n))
+            }
         }
 
         impl Neg for $ty {
@@ -163,8 +164,7 @@ define_methods!(
     fma_upscale_coeff = 3.7778932e22,
     nan_quietness_bit = 0x400000,
     exponent_mask = 0x7f800000,
-    mantissa_mask = 0x7fffff,
-    twop_mantissa_digits = 8388608.0
+    mantissa_mask = 0x7fffff
 );
 define_methods!(
     F64 => f64, u64,
@@ -172,13 +172,13 @@ define_methods!(
     fma_upscale_coeff = 8.997827589086393e+161,
     nan_quietness_bit = 0x8000000000000,
     exponent_mask = 0x7ff0000000000000,
-    mantissa_mask = 0xfffffffffffff,
-    twop_mantissa_digits = 4503599627370496.0
+    mantissa_mask = 0xfffffffffffff
 );
 
 /// Common interface for `u32` and `u64`.
 pub trait Bits:
     Copy
+    + LowerHex
     + BitXorAssign
     + Add<Output = Self>
     + BitAnd<Output = Self>

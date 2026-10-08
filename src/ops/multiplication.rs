@@ -78,7 +78,8 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     // overflow flag. Since we can't compute `a * b` immediately either, this forces branching on
     // `a` and `b` before doing anything.
 
-    if a.abs().to_bits().max(b.abs().to_bits()) >= T::TWOP_MANTISSA_DIGITS.to_bits() {
+    let limit = T::TWO.powi(T::MANTISSA_DIGITS as i32);
+    if a.abs().to_bits().max(b.abs().to_bits()) >= limit.to_bits() {
         // `|a| >= 2^mantissa_digits` implies
         //     |a * b| >= 2^(mantissa_digits + (mine - mantissa_digits)) = 2^mine,
         // i.e. no underflow of any kind, as long as `b != 0`. `b = 0` doesn't introduce any
@@ -240,7 +241,7 @@ fn is_exact_with_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> bool {
     //     |a * b| >= 2^(mine + mantissa_digits + 1),
     // which in turn is implied by
     //     round(|a * b|) > 2^(mine + mantissa_digits + 1).
-    let limit = T::MIN_POSITIVE * T::TWOP_MANTISSA_DIGITS * T::TWO;
+    let limit = T::MIN_POSITIVE * T::TWO.powi(T::MANTISSA_DIGITS as i32) * T::TWO;
     if Fast(product.abs()) > Fast(limit) {
         return Fast(env.mul_add(a, b, -product)) == Fast(T::ZERO);
     }
@@ -450,7 +451,7 @@ fn lowest_bit_set<T: Native>(x: T) -> T {
 fn lowest_bit_fit_abs<T: Native>(x: T) -> T {
     assert!(x.is_finite(), "non-finite input to lowest_bit_fit");
 
-    let factor = T::ONE / T::TWOP_MANTISSA_DIGITS;
+    let factor = T::TWO.powi(-(T::MANTISSA_DIGITS as i32 - 1));
 
     let exp_bits = x.to_bits() & T::EXPONENT_MASK;
     if exp_bits == T::Bits::ZERO {
