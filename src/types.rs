@@ -276,6 +276,9 @@ impl Env {
     /// bit set, or with the quiet bit off, or with a non-zero payload) to propagate. There is no
     /// helper method for such a scenario because that isn't expected to arise.
     pub fn from_native_canonicalizing_nan_after_op<F: Float>(&self, x: F::Native) -> F {
+        #[cfg(feature = "explore")]
+        return F::from_native_transmuting_nan(x);
+
         // This check both validates that this function is not directly applied to function inputs
         // without passing through an FP op (bruteforce tests should eventually trigger such
         // a condition with an sNaN input) and ensures that the NaN can be canonicalized
