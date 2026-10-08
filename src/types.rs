@@ -27,7 +27,7 @@ macro_rules! F64 {
 }
 
 /// Common interface for [`F32`] and [`F64`].
-pub trait Float: Copy {
+pub trait Float: Copy + Debug {
     type Native: Native;
 
     const CANONICAL_NAN: Self;

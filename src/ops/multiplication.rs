@@ -1,7 +1,7 @@
 use crate::{
     Env, Exceptions, Float, RoundingMode,
     common::set_exceptions_non_finite,
-    native::{Bits, Fast, Native},
+    native::{Bits, Fast, Native, Quiet},
 };
 
 pub fn mul<T: Float>(a: T, b: T, env: &mut Env) -> T {
@@ -157,49 +157,7 @@ fn set_exceptions<T: Native, F: Float>(
         // Maybe try FMA multiple times with different factors?
         unimplemented!()
     } else {
-        // On hosts without FMA, we can use a trick to perform an exactness check without computing
-        // the error. It suffices to check if the lowest bit set in `a * b` (when treated
-        // mathematically as a sum of `2^k_i`, so the index can be negative) is no lower than the
-        // lowest bit that *can* fit in `product` (which is determined only by its exponent).
-        // Essentially this checks that no bits were lost due to rounding. This works in all cases
-        // except when the product overflows to a finite value; see below for more info.
-        //
-        // This is cheaper than running Veltkamp's algorithm to compute the error, and that
-        // algorithm doesn't work in presence of underflows anyway, *and* it requires the active
-        // rounding mode to be round-to-nearest, which we can't guarantee.
-        //
-        // What we want to check here is essentially
-        //     |lowest_bit_set(a) * lowest_bit_set(b)| >= |lowest_bit_fit(product)|
-        // ...but the multiplication in this formula is a nightmare. Underflows can occur there,
-        // which would be fine if they were rounded down to `0` (because, if the correct product has
-        // a bit that must underflow, the product must be inexact, so `0 >= non-zero` -> `false` is
-        // the correct answer), but in rounding modes other than NE they can round up to the
-        // smallest subnormal, causing false positives. We can fix the underflow by computing
-        //     |lowest_bit_set(a) * (lowest_bit_set(b) * 2)| >= |lowest_bit_fit(product) * 2|
-        // ...instead, which makes the multiplication underflow to a number smaller than the one on
-        // the right, thus consistently returning `false`. That trades it for an overflow *only* for
-        // `b = +-2^maxe`, but such a multiplication is always exact, so getting `+inf >= ...` ->
-        // `true` here works out fine. Note that multiplying by 2 and not `2^mantissa_digits`, which
-        // would simplify some logic, is necessary, because even 4 allows `b = 2^maxe * (1 + 0.5)`
-        // to cause an inexact product while overflowing to `+inf` on the `* 4`.
-        let lift = |x: T| {
-            if env.features().round {
-                x * T::TWO
-            } else {
-                x // multiplying by 1.0 can't be optimized due to sNaN
-            }
-        };
-        // Note that we can invoke `lowest_bit_fit` on a zero input if the product is below the
-        // range of subnormals. In this case, treating a zero `product` as a subnormal is correct
-        // from the precision perspective, so there is no special logic for it. But it does mean
-        // that we need to handle the "`a = 0` or `b = 0`" case manually, otherwise we'll get
-        // `0 >= non-zero`.
-        let is_exact = Fast(a) == Fast(T::ZERO)
-            || Fast(b) == Fast(T::ZERO)
-            || Fast((lowest_bit_set(a) * lift(lowest_bit_set(b))).abs())
-                >= Fast(lowest_bit_fit_abs(product, env.features().round));
-
-        if is_exact {
+        if is_exact_without_fma(a, b, product, env) {
             // Inexactness arising from overflows to finite values, such as the ones that happen in
             // flooring mode, are not detected by this logic, so they have to be checked for
             // explicitly. See `set_overflow` for more info.
@@ -252,6 +210,85 @@ fn set_exceptions<T: Native, F: Float>(
     }
 
     set_overflow(a, b, env);
+}
+
+// Checks for exactness, assuming there was no finite overflow.
+fn is_exact_without_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> bool {
+    assert!(
+        product.is_finite(),
+        "non-finite product passed to is_exact_without_fma"
+    );
+
+    // On hosts without FMA, we can use a trick to perform an exactness check without computing the
+    // error. It suffices to check if the lowest bit set in `a * b` (when treated mathematically as
+    // a sum of `2^k_i`, so the index can be negative) is no lower than the lowest bit that *can*
+    // fit in `product` (which is determined only by its exponent). Essentially this checks that no
+    // bits were lost due to rounding. This works in all cases except when the product overflows to
+    // a finite value, which is why the caller of this function also checks for overflow.
+    //
+    // This is cheaper than running Veltkamp's algorithm to compute the error, and that algorithm
+    // doesn't work in presence of underflows anyway, *and* it requires the active rounding mode to
+    // be round-to-nearest, which we can't guarantee.
+    //
+    // What we want to check here is essentially
+    //     |lowest_bit_set(a) * lowest_bit_set(b)| >= |lowest_bit_fit(product)|,
+    // but there are a ton of nuances.
+
+    // Let's start with the functions themselves. `lowest_bit_set` only works for non-zero inputs,
+    // and while it can be adjusted to return `+inf` for zeros, it's cheaper to just perform this
+    // check at the beginning.
+    if Fast(a) == Fast(T::ZERO) || Fast(b) == Fast(T::ZERO) {
+        return true;
+    }
+
+    let bit_a = lowest_bit_set(a);
+    let bit_b = lowest_bit_set(b);
+    let bit_product = lowest_bit_fit_abs(product);
+
+    // Underflows can occur during the multiplication, which is fine if they are rounded down to `0`
+    // (because, if the correct product has a bit that must underflow, the entire product must be
+    // inexact, so `0 >= non-zero` -> `false` is the correct answer).
+    if !env.features().round {
+        return Fast((bit_a * bit_b).abs()) >= Fast(bit_product);
+    }
+
+    // But in rounding modes other than NE `bit_a * bit_b` can round up to the smallest subnormal,
+    // causing false positives. We can fix the underflow by computing
+    //     |lowest_bit_set(a) * (lowest_bit_set(b) * 2)| >= |lowest_bit_fit(product) * 2|
+    // ...instead, which makes the multiplication underflow to a number smaller than the one on
+    // the right, thus consistently returning `false`.
+    //
+    // That trades it for an overflow *only* for `b = +-2^maxe`, but such a multiplication is
+    // always exact (assuming the product is finite), so getting `+inf >= ...` -> `true` here works
+    // out fine. But we aren't guaranteed to get `+inf`, instead we might get the largest finite
+    // number due to the rounding mode being weird, which is *slightly* below `bit_b * 2`
+    // mathematically, but that's enough for the check to fail.
+    //
+    // So we also nudge `bit_b * 2` up by 1:
+    // - For `bit_b * 2` rounded up to the largest finite value, this nudges it to infinity.
+    // - For `bit_b * 2` rounded up to infinity, this nudges it to a (likely signaling) NaN, which
+    //   forces us to write the comparison carefully. We use a quiet comparison despite being on
+    //   a path without exceptions, because fast comparisons assert lack of NaNs for more thorough
+    //   testing; the C port should use a fast comparison.
+    // - In the remaining cases, this slightly increases the value, up to 50% in case where `bit_b`
+    //   is the smallest subnormal, which causes `bit_a * (bit_b * 2)` to increase by the same
+    //   percentage, and since we're only dealing with powers of two, any increase below 100%
+    //   doesn't break anything despite looking scary.
+    //
+    // Notes:
+    //
+    // Multiplying by 2 and not `2^mantissa_digits`, which would simplify some logic, is necessary,
+    // because even 4 allows `b = 2^maxe * (1 + 0.5)` to cause an inexact product while overflowing
+    // to `+inf` on the `* 4`.
+    //
+    // We can invoke `lowest_bit_fit` on a zero input if the product is below the range of
+    // subnormals. In this case, treating a zero `product` as a subnormal is correct from the
+    // precision perspective, so there is no special logic for it. But it does force us to handle
+    // the "`a = 0` or `b = 0`" case manually, otherwise we'll get `0 >= non-zero`.
+    //
+    // `bit_product * 2` doesn't overflow because it's `lowest_bit_fit` and not `lowest_bit_set`, so
+    // its upper bound is determined by the lowest bit of the mantissa, not its hidden bit.
+    !(Quiet((bit_a * (bit_b * T::TWO).nudge(1)).abs()) < Quiet(bit_product * T::TWO))
 }
 
 fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
@@ -352,12 +389,10 @@ fn lowest_bit_set<T: Native>(x: T) -> T {
 
 /// Returns the smallest value `2^k` such that `2^k` can be set in the finite input `x` given its
 /// exponent. A zero input is treated as a subnormal value.
-///
-/// If `double` is `true`, the answer is also multiplied by two.
-fn lowest_bit_fit_abs<T: Native>(x: T, double: bool) -> T {
+fn lowest_bit_fit_abs<T: Native>(x: T) -> T {
     assert!(x.is_finite(), "non-finite input to lowest_bit_fit");
 
-    let factor = if double { T::TWO } else { T::ONE } / T::TWOP_MANTISSA_DIGITS;
+    let factor = T::ONE / T::TWOP_MANTISSA_DIGITS;
 
     let exp_bits = x.to_bits() & T::EXPONENT_MASK;
     if exp_bits == T::Bits::ZERO {
@@ -371,6 +406,6 @@ fn lowest_bit_fit_abs<T: Native>(x: T, double: bool) -> T {
         T::from_bits(exp_bits) * factor
     }
 
-    // Bit twiddling-only implementation returning the index `k` (ignoring `double`):
+    // Bit twiddling-only implementation returning the index `k`:
     //     x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXP - T::MANTISSA_DIGITS as i32
 }

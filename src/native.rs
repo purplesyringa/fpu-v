@@ -8,6 +8,7 @@ use crate::{Exceptions, RoundingMode};
 use core::arch::asm;
 use core::cell::Cell;
 use core::cmp::Ordering;
+use core::fmt::Debug;
 use core::fmt::{self, Display, Formatter};
 use core::ops::{Add, BitAnd, BitOr, BitXorAssign, Div, Mul, Neg, Not, Shr, Sub};
 
@@ -22,6 +23,7 @@ pub struct F64(f64);
 /// Common interface for [`F32`] and [`F64`].
 pub trait Native:
     Copy
+    + Debug
     + Neg<Output = Self>
     + Add<Output = Self>
     + Sub<Output = Self>
