@@ -305,6 +305,8 @@ fn is_exact_without_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> boo
         return true;
     }
 
+    // This should be vectorized, Rust refuses to do that for some reason, probably due to the
+    // number of nested trivial functions.
     let bit_a = lowest_bit_set(a);
     let bit_b = lowest_bit_set(b);
     let bit_product = lowest_bit_fit_abs(product);
@@ -407,11 +409,13 @@ fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
 ///
 /// The sign of the resulting value matches the sign of `x`.
 fn lowest_bit_set<T: Native>(x: T) -> T {
+    #[cfg(not(feature = "explore"))]
     assert!(x.is_finite(), "non-finite input to lowest_bit_set");
 
     // The formulas below are completely broken for zeros (they either return the wrong values or
     // mess up something else), which is why this function shouldn't be invoked on zeros. We could
     // fix that with special-casing, but that's slow and unnecessary.
+    #[cfg(not(feature = "explore"))]
     assert!(Fast(x) != Fast(T::ZERO), "zero input to lowest_bit_set");
 
     // There are two ways to find the lowest bit:
