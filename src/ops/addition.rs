@@ -68,7 +68,7 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
     // and allowing us to safely handle overflow and saturation in a centralized manner.
     //
     // The only issue with using `a/2` and `b/2` are underflows, which we have to handle separately.
-    let limit = T::MIN_POSITIVE * T::TWO;
+    let limit = T::TWO.powi(T::MIN_EXPONENT + 1);
     // Make sure not to trigger exceptions on NaN.
     if Quiet(a.abs()) < Quiet(limit) || Quiet(b.abs()) < Quiet(limit) {
         core::hint::cold_path();

@@ -36,7 +36,7 @@ pub trait Native:
     const ONE: Self;
     const TWO: Self;
     const INFINITY: Self;
-    const MIN_POSITIVE: Self; // smallest positive *normal* value
+    const MIN_EXPONENT: i32; // smallest normal exponent, differs from std's `MIN_EXP`!
     const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
     const TWOP_NEG_MAXE_SPLIT: Self; // `2^(-(maxe + 1) / 2)`, used in multiplication
     const FMA_UPSCALE_COEFF: Self; // `2^(ceil(-(mine - mantissa_len) / 2))`
@@ -88,7 +88,7 @@ macro_rules! define_methods {
             const ONE: Self = Self(1.0);
             const TWO: Self = Self(2.0);
             const INFINITY: Self = Self($native::INFINITY);
-            const MIN_POSITIVE: Self = Self($native::MIN_POSITIVE);
+            const MIN_EXPONENT: i32 = $native::MIN_EXP - 1;
             const TWOP_MAXE: Self = Self(($native::MAX / 2.0).next_up());
             const TWOP_NEG_MAXE_SPLIT: Self = Self($twop_neg_maxe_split);
             const FMA_UPSCALE_COEFF: Self = Self($fma_upscale_coeff);

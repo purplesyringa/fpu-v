@@ -96,7 +96,8 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     let double_product = a * (b * T::TWO);
 
     // `a` and `b` are finite, so there can be no `NaN` here.
-    if Fast(double_product) != Fast(T::MIN_POSITIVE * T::TWO) {
+    let limit = T::TWO.powi(T::MIN_EXPONENT + 1);
+    if Fast(double_product) != Fast(limit) {
         // No risk of spurious underflow. Note that returning `double_product * 0.5` here would be
         // incorrect, because that introduces double rounding for subnormal `double_product`s.
         return a * b;
@@ -114,7 +115,7 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     // `* 2` and `* 0.5` are exact, `a * (b * 2)` is the only source of inexactness on the right, so
     // it raises the inexact flag iff `a * b` raises it. We can thus avoid evaluating `a * b` on
     // this path (which is the entire point, because it underflows spuriously).
-    T::MIN_POSITIVE
+    T::TWO.powi(T::MIN_EXPONENT)
 }
 
 // fn error_ne<T: Native>(a: T, b: T, product: T) -> T {
@@ -198,7 +199,7 @@ fn set_exceptions<T: Native, F: Float>(
     // computed originally, so this logic only runs for native modes, and emulated ones are handled
     // by `mul_with_rounding` instead (XXX).
     if env.emulate_rounding_mode().is_none() {
-        let limit = T::MIN_POSITIVE * T::TWO;
+        let limit = T::TWO.powi(T::MIN_EXPONENT + 1);
         let is_underflow = Fast((a * (b * T::TWO)).abs()) < Fast(limit);
         if is_underflow {
             env.raise(Exceptions::UNDERFLOW);
@@ -241,7 +242,7 @@ fn is_exact_with_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> bool {
     //     |a * b| >= 2^(mine + mantissa_len + 1),
     // which in turn is implied by
     //     round(|a * b|) > 2^(mine + mantissa_len + 1).
-    let limit = T::MIN_POSITIVE * T::TWO.powi(T::MANTISSA_LEN as i32) * T::TWO;
+    let limit = T::TWO.powi(T::MIN_EXPONENT + T::MANTISSA_LEN as i32 + 1);
     if Fast(product.abs()) > Fast(limit) {
         return Fast(env.mul_add(a, b, -product)) == Fast(T::ZERO);
     }
@@ -460,7 +461,7 @@ fn lowest_bit_fit_abs<T: Native>(x: T) -> T {
         // This evaluation is constant, and it's only consumed by a comparison, so this doesn't
         // enter microcode and we don't have to worry about zeros getitng slowed down by anything
         // other than branch prediction.
-        T::MIN_POSITIVE * factor
+        T::TWO.powi(T::MIN_EXPONENT) * factor
     } else {
         T::from_bits(exp_bits) * factor
     }
