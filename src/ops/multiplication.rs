@@ -302,8 +302,8 @@ fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
     // for more info; in a nutshell, here we just need to check if `|round(a * b)| >= 2^(maxe+1)`
     // would hold if the exponent range was unbounded.
     //
-    // Lemma: `round(x * y)` has a maximum exponent of `exp_x + exp_y + 1`, because in worst-case
-    // scenario:
+    // Lemma: for normal numbers `x` and `y`, `round(x * y)` has a maximum exponent of
+    // `exp_x + exp_y + 1`, because in worst-case scenario:
     //     x = 2^exp_x * (2 - 2^-mantissa_digits)
     //     y = 2^exp_y * (2 - 2^-mantissa_digits)
     // ...we have:
