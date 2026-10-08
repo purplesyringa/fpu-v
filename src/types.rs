@@ -154,6 +154,8 @@ pub struct HostFeatures {
     pub nan_canonicalization: bool,
     /// Host detects underflow "after rounding", not "before rounding". Implies `exceptions`.
     pub underflow_after_rounding: bool,
+    /// Host supports FMA.
+    pub fma: bool,
 }
 
 bitflags! {
@@ -355,6 +357,14 @@ impl Env {
         }
         T::Native::from_bits(bits)
     }
+
+    /// Compute `a * b + c`, rounding once.
+    ///
+    /// Panics if the FMA feature is disabled.
+    pub fn mul_add<T: Native>(&self, a: T, b: T, c: T) -> T {
+        assert!(self.features.fma, "FMA is disabled");
+        a.mul_add(b, c)
+    }
 }
 
 impl HostFeatures {
@@ -365,6 +375,7 @@ impl HostFeatures {
         inverted_nan_quietness: false,
         nan_canonicalization: false,
         underflow_after_rounding: true,
+        fma: true,
     };
 
     pub const WASM: Self = Self {
@@ -374,6 +385,7 @@ impl HostFeatures {
         inverted_nan_quietness: false,
         nan_canonicalization: false,
         underflow_after_rounding: false,
+        fma: false,
     };
 
     pub const ONLY_ROUNDING: Self = Self {
@@ -383,6 +395,17 @@ impl HostFeatures {
         inverted_nan_quietness: false,
         nan_canonicalization: false,
         underflow_after_rounding: false,
+        fma: false,
+    };
+
+    pub const ONLY_ROUNDING_FMA: Self = Self {
+        exceptions: false,
+        round: true,
+        rmm: false,
+        inverted_nan_quietness: false,
+        nan_canonicalization: false,
+        underflow_after_rounding: false,
+        fma: true,
     };
 
     pub const ONLY_EXCEPTIONS_X86: Self = Self {
@@ -392,5 +415,6 @@ impl HostFeatures {
         inverted_nan_quietness: false,
         nan_canonicalization: false,
         underflow_after_rounding: true,
+        fma: false,
     };
 }

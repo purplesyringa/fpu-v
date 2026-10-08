@@ -41,6 +41,7 @@ pub trait Native:
     const MIN_POSITIVE: Self; // smallest positive *normal* value
     const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
     const TWOP_NEG_MAXE_SPLIT: Self; // `2^(-(maxe + 1) / 2)`, used in multiplication
+    const FMA_UPSCALE_COEFF: Self; // `2^(ceil(-(mine - mantissa_digits) / 2))`
     const NAN_QUIETNESS_BIT: Self::Bits; // machine-independent, just 2^k
     const EXPONENT_MASK: Self::Bits;
     const MANTISSA_MASK: Self::Bits;
@@ -69,12 +70,14 @@ pub trait Native:
     /// Note that the unbiased exponent is `biased_exponent - 1 - MIN_EXP`, not
     /// `biased_exponent - MIN_EXP`, due to the presence of subnormal values.
     fn biased_exponent(self) -> u32;
+    fn mul_add(self, b: Self, c: Self) -> Self;
 }
 
 macro_rules! define_methods {
     (
         $ty:ident => $native:ident, $bits:ident,
         twop_neg_maxe_split = $twop_neg_maxe_split:literal,
+        fma_upscale_coeff = $fma_upscale_coeff:literal,
         nan_quietness_bit = $nan_quietness_bit:literal,
         exponent_mask = $exponent_mask:literal,
         mantissa_mask = $mantissa_mask:literal,
@@ -91,6 +94,7 @@ macro_rules! define_methods {
             const MIN_POSITIVE: Self = Self($native::MIN_POSITIVE);
             const TWOP_MAXE: Self = Self(($native::MAX / 2.0).next_up());
             const TWOP_NEG_MAXE_SPLIT: Self = Self($twop_neg_maxe_split);
+            const FMA_UPSCALE_COEFF: Self = Self($fma_upscale_coeff);
             const NAN_QUIETNESS_BIT: Self::Bits = $nan_quietness_bit;
             const EXPONENT_MASK: Self::Bits = $exponent_mask; // f32::EXPONENT_MASK is unstable
             const MANTISSA_MASK: Self::Bits = $mantissa_mask; // f32::MANTISSA_MASK is unstable
@@ -132,6 +136,9 @@ macro_rules! define_methods {
             fn biased_exponent(self) -> u32 {
                 ((self.to_bits() & Self::EXPONENT_MASK) >> Self::MANTISSA_DIGITS) as u32
             }
+            fn mul_add(self, b: Self, c: Self) -> Self {
+                Self(self.0.mul_add(b.0, c.0))
+            }
         }
 
         impl Neg for $ty {
@@ -153,6 +160,7 @@ macro_rules! define_methods {
 define_methods!(
     F32 => f32, u32,
     twop_neg_maxe_split = 5.421011e-20,
+    fma_upscale_coeff = 3.7778932e22,
     nan_quietness_bit = 0x400000,
     exponent_mask = 0x7f800000,
     mantissa_mask = 0x7fffff,
@@ -161,6 +169,7 @@ define_methods!(
 define_methods!(
     F64 => f64, u64,
     twop_neg_maxe_split = 7.458340731200207e-155,
+    fma_upscale_coeff = 8.997827589086393e+161,
     nan_quietness_bit = 0x8000000000000,
     exponent_mask = 0x7ff0000000000000,
     mantissa_mask = 0xfffffffffffff,

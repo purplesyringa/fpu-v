@@ -13,6 +13,7 @@ fn diff_test<R: Copy + Eq + Debug>(
         HostFeatures::X86,
         // HostFeatures::WASM,
         HostFeatures::ONLY_ROUNDING,
+        HostFeatures::ONLY_ROUNDING_FMA,
         // HostFeatures::ONLY_EXCEPTIONS_X86,
     ]
     .map(|features| {

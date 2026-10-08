@@ -147,14 +147,10 @@ fn set_exceptions<T: Native, F: Float>(
         return;
     }
 
-    // env.features().fma
-    if false {
-        // TODO: handle machines with FMA.
-        //
-        // We cannot compute the error `a * b - product` as a float generally, because the error may
-        // be smaller than the subnormal range, causing us to erroneously claim an exact result.
-        // Maybe try FMA multiple times with different factors?
-        unimplemented!()
+    if env.features().fma {
+        if is_exact_with_fma(a, b, product, env) {
+            return;
+        }
     } else {
         if is_exact_without_fma(a, b, product, env) {
             // Inexactness arising from overflows to finite values, such as the ones that happen in
@@ -193,7 +189,7 @@ fn set_exceptions<T: Native, F: Float>(
     // `< 2^mine`. This covers both the subnormal rounded product and borderline rounded product
     // cases, as long as no overflow occurs during the calculation of `b * 2` -- and it can't occur
     // for small products, because `|a * b| < 2^mine` implies
-    //     |b| < 2^mine / |a| <= 2^mine / 2^(mine - mantissa_len) = 2^mantissa_len
+    //     |b| < 2^mine / |a| <= 2^mine / 2^(mine - mantissa_digits) = 2^mantissa_digits
     // ...as long as `a != 0`, which holds because the product is inexact. For `|a * b| >= 2^mine`
     // this can overflow, but it'll just result in `false`, which is correct.
     //
@@ -209,6 +205,72 @@ fn set_exceptions<T: Native, F: Float>(
     }
 
     set_overflow(a, b, env);
+}
+
+fn is_exact_with_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> bool {
+    assert!(
+        product.is_finite(),
+        "non-finite product passed to is_exact_with_fma"
+    );
+
+    // The error `a * b - product` can't be expressed as a float in general, because it may be below
+    // the subnormal range, causing us to erroneously claim an exact result. In the worst case, for
+    // `a` and `b` equal to the smallest subnormal, `2^(mine - mantissa_digits)`, the error may be
+    // `2^(mine - mantissa_digits)` times smaller than the smallest positive float!
+    //
+    // We want to keep `fma(a, b, -product) == 0` as a fast path, though. This is correct regardless
+    // of rounding mode as long as the mathematical error is `>= 2^(mine - mantissa_digits)`. Giving
+    // a good lower bound on the error is difficult in presence of subnormals that have a shortened
+    // mantissa, but we can at least say that:
+    // - `a` has no bits below `floor(log2 |a|) - mantissa_digits`.
+    // - `b` has no bits below `floor(log2 |b|) - mantissa_digits`.
+    // - `a * b` thus has no bits below `floor(log2 |a|) + floor(log2 |b|) - 2 * mantissa_digits`,
+    //   so the error, if present, must be at least 2 to the power of that value.
+    //
+    // This gives us
+    //     floor(log2 |a|) + floor(log2 |b|) - 2 * mantissa_digits >= mine - mantissa_digits
+    //     <=> floor(log2 |a|) + floor(log2 |b|) >= mine + mantissa_digits
+    // ...as a sufficient condition for an error to not be rounded away (it can still be rounded,
+    // but not straight to zero). Since:
+    //     floor(log2 |a|) + floor(log2 |b|) >= floor(log2 |a| + log2 |b|) - 1
+    //         = floor(log2 |a * b|) - 1,
+    // the condition
+    //     floor(log2 |a * b|) >= mine + mantissa_digits + 1
+    // is also sufficient, and that is implied by
+    //     |a * b| >= 2^(mine + mantissa_digits + 1),
+    // which in turn is implied by
+    //     round(|a * b|) > 2^(mine + mantissa_digits + 1).
+    let limit = T::MIN_POSITIVE * T::TWOP_MANTISSA_DIGITS * T::TWO;
+    if Fast(product.abs()) > Fast(limit) {
+        return Fast(env.mul_add(a, b, -product)) == Fast(T::ZERO);
+    }
+
+    // For the remaining values, we have
+    //     round(|a * b|) <= 2^(mine + mantissa_digits + 1),
+    // which is sufficient to guarantee that multiplying `product` by `2^-(mine - mantissa_digits)`
+    // to make the error visible won't overflow:
+    //     (mine + mantissa_digits + 1) - (mine - mantissa_digits) = 2 * mantissa_digits + 1 < maxe
+    // It also gives bounds on `a` and `b`, as long as the inputs are non-zero:
+    //     |a * b| < round(|a * b|) * (1 + 2^-mantissa_digits) < round(|a * b|) * 2
+    //         <= 2^(mine + mantissa_digits + 2)
+    //     |a| = |a * b| / |b| <= |a * b| / 2^(mine - mantissa_digits)
+    //         < 2^(mine + mantissa_digits + 2) / 2^(mine - mantissa_digits)
+    //         = 2^(2 * mantissa_digits + 2)
+    // ...and same for `|b|`. This gives `exp_a <= 2 * mantissa_digits + 1`, which doesn't allocate
+    // as much space for upscaling as `product`, but `2^(-(mine - mantissa_digits) / 2)` still fits:
+    //     2 * mantissa_digits + 1 - (mine - mantissa_digits) / 2
+    //     = 2.5 * mantissa_digits + 1 + (-mine) / 2
+    //     = 2.5 * mantissa_digits + 0.5 + maxe / 2 < maxe.
+    // In practice we ceil the `/ 2` to load fewer constants.
+    //
+    // The above reasoning fails for zero inputs. For example, if `a = 0`, this can overflow when
+    // computing `b * coeff`. This can imply one of two things:
+    // 1. It overflows to a finite value, we get `fma(0, finite, 0) = 0`, and everything works fine.
+    // 2. It overflows to infinity, we get `fma(0, inf, 0) = NaN`.
+    // To handle (2), we treat NaN errors as exact, because NaNs don't arise otherwise.
+    let coeff = T::FMA_UPSCALE_COEFF;
+    let error = env.mul_add(a * coeff, b * coeff, -(product * coeff) * coeff);
+    error.is_nan() || Fast(error) == Fast(T::ZERO)
 }
 
 // Checks for exactness, assuming there was no finite overflow.
