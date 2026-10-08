@@ -104,14 +104,15 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
     }
 
+    let limit = T::TWO.powi(T::MAX_EXPONENT);
     let saturate_to_finite = match round {
         RoundingMode::ToNearest => unreachable!(),
         // Flooring saturates a very positive output to the largest representable float, but a very
         // negative output to `-inf`, because `-inf` is <= every finite value. So we can't just
         // compare absolute values here and need per-mode logic.
-        RoundingMode::Floor => Fast(half_sum) >= Fast(T::TWOP_MAXE),
-        RoundingMode::Ceil => Fast(half_sum) <= Fast(-T::TWOP_MAXE),
-        RoundingMode::Trunc => Fast(half_sum.abs()) >= Fast(T::TWOP_MAXE),
+        RoundingMode::Floor => Fast(half_sum) >= Fast(limit),
+        RoundingMode::Ceil => Fast(half_sum) <= Fast(-limit),
+        RoundingMode::Trunc => Fast(half_sum.abs()) >= Fast(limit),
         RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
     };
 
@@ -281,7 +282,8 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
         // - Large finite value + negative subnormal returns the same value as long as the subnormal
         //   doesn't fall to zero, but halving a negative subnormal under floor mode retains this
         //   property.
-        if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(T::TWOP_MAXE) {
+        let limit = T::TWO.powi(T::MAX_EXPONENT);
+        if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(limit) {
             env.raise(Exceptions::OVERFLOW);
         }
         // This calculation (`a * 0.5 + b * 0.5`) can be optimized a little further. We can manually

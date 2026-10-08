@@ -37,7 +37,7 @@ pub trait Native:
     const TWO: Self;
     const INFINITY: Self;
     const MIN_EXPONENT: i32; // smallest normal exponent, differs from std's `MIN_EXP`!
-    const TWOP_MAXE: Self; // precomputed constant to avoid this arithmetic setting flags in runtime
+    const MAX_EXPONENT: i32; // largest normal exponent, differs from std's `MAX_EXP`!
     const TWOP_NEG_MAXE_SPLIT: Self; // `2^(-(maxe + 1) / 2)`, used in multiplication
     const NAN_QUIETNESS_BIT: Self::Bits; // machine-independent, just 2^k
     const EXPONENT_MASK: Self::Bits;
@@ -87,7 +87,7 @@ macro_rules! define_methods {
             const TWO: Self = Self(2.0);
             const INFINITY: Self = Self($native::INFINITY);
             const MIN_EXPONENT: i32 = $native::MIN_EXP - 1;
-            const TWOP_MAXE: Self = Self(($native::MAX / 2.0).next_up());
+            const MAX_EXPONENT: i32 = $native::MAX_EXP - 1;
             const TWOP_NEG_MAXE_SPLIT: Self = Self($twop_neg_maxe_split);
             const NAN_QUIETNESS_BIT: Self::Bits = $nan_quietness_bit;
             const EXPONENT_MASK: Self::Bits = $exponent_mask; // f32::EXPONENT_MASK is unstable
