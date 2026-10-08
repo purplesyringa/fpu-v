@@ -1,3 +1,5 @@
+use std::f32::MANTISSA_DIGITS;
+
 use crate::{
     Env, Exceptions, Float, RoundingMode,
     common::set_exceptions_non_finite,
@@ -75,24 +77,51 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     //
     // We can detect that by computing `a * (b * 2) == 2^(mine+1)` (though that also includes
     // rounding *down* to `2^mine`). But we need to be careful about not accidentally raising the
-    // overflow flag. Since we can't compute `a * b` immediately either, this forces branching on
-    // `a` and `b` before doing anything.
+    // overflow flag when computing the product. Since we can't compute `a * b` immediately either
+    // due to spurious underflows, we have to estimate the orders of magnitude beforehand.
 
-    let limit = T::TWO.powi(T::MANTISSA_LEN as i32);
-    if a.abs().to_bits().max(b.abs().to_bits()) >= limit.to_bits() {
-        // `|a| >= 2^mantissa_len` implies
-        //     |a * b| >= 2^(mantissa_len + (mine - mantissa_len)) = 2^mine,
-        // i.e. no underflow of any kind, as long as `b != 0`. `b = 0` doesn't introduce any
-        // underflows either. Checking both `a` and `b` ensures we get onto this fast path as often
-        // as possible. The bitwise check instead of a floating-point one is a) faster, b) also
-        // captures NaN and infinities in this branch.
+    // We'd like to write a condition without FP operations that implies `|a * b| >= 2^mine` and
+    // holds as often as possible. `|a| >= 2^mantissa_len || |b| >= 2^mantissa_len` suffices, since
+    // either implies
+    //     |a * b| >= 2^(mantissa_len + (mine - mantissa_len)) = 2^mine,
+    // ...but we can find a better condition by adding `|a|` and `|b|` bitwise. This adds the
+    // exponents of `|a|` and `|b|`, so it's actually a reasonable approximation of the product as
+    // long as we adjust for the exponent bias.
+    //
+    // Subnormals introduce some trouble: we'd love to say that `exp_a + exp_b >= mine` implies
+    // `|a * b| >= 2^mine`, but that fails, because having a stored exponent `exp_a` doesn't imply
+    // `|a| >= 2^exp_a` if `exp_a = mine - 1`. We actually need
+    //     exp_a + exp_b >= mine + mantissa_len - 1
+    // ...to claim anything useful: if only `a` is denormal, this corresponds to
+    //     mine - 1 + exp_b >= mine + mantissa_len - 1
+    //     => exp_b >= mantissa_len
+    //     => |b| >= 2^mantissa_len
+    //     => |a * b| >= 2^(mine - mantissa_len) * 2^mantissa_len = 2^mine,
+    // ...and if both `a` and `b` are denormal, the condition always fails. (This also sometimes
+    // matches zeros by accident, but that's fine.)
+    //
+    // The pseudo-product has the biased "exponent"
+    //     (exp_a - (mine - 1)) + (exp_b - (mine - 1)) = exp_a + exp_b - 2 * (mine - 1),
+    // or one greater if the mantissa overflows into the exponent. As long as it's at least
+    // `2 - mine + mantissa_len`, we have:
+    //     exp_a + exp_b - 2 * (mine - 1) + 1 >= 2 - mine + mantissa_len
+    //     =>  exp_a + exp_b >= mine + mantissa_len - 1,
+    // which implies `|a * b| >= 2^mine` as discussed above.
+    //
+    // Note that as long as `exp_a >= mantissa_len + 1`, the condition always holds, which means
+    // that a) we're not losing much compared to independent checks, b) it also captures `NaN`s and
+    // infinities.
+    let limit = (2 + (-T::MIN_EXPONENT) as u32 + T::MANTISSA_LEN) << T::MANTISSA_LEN;
+    if a.abs().to_bits() + b.abs().to_bits() >= T::with_biased_exponent(limit).to_bits() {
         return a * b;
     }
 
-    // `a` and `b` both being small implies that neither `b * 2`, nor `a * (b * 2)` overflow. This
-    // computation raises underflow for `a * b < 2^(mine-1)`, but that implies
+    // `a` and `b` both being below `2^(mantissa_len + 1)` implies that neither `b * 2`, nor
+    // `a * (b * 2)` overflow.
+    //
+    // This computation raises underflow if `a * b < 2^(mine-1)`, but that implies
     // `round(a * b) < 2^mine`, so it's fine. Similarly, it can raise inexact, though it's not
-    // guaranteed to be so if `a * b` is on the subnormal boundary.
+    // guaranteed to do so if `a * b` is on the subnormal boundary.
     let double_product = a * (b * T::TWO);
 
     // `a` and `b` are finite, so there can be no `NaN` here.

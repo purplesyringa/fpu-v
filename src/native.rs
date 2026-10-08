@@ -67,6 +67,10 @@ pub trait Native:
     fn mul_add(self, b: Self, c: Self) -> Self;
     /// Compute `self^n` without setting flags. Useful only for constants.
     fn powi(self, n: i32) -> Self;
+    /// Places `exp` above a zeroed mantissa.
+    ///
+    /// If `exp` is out of bounds for the exponent field, it carries into the sign bit.
+    fn with_biased_exponent(exp: u32) -> Self;
 }
 
 macro_rules! define_methods {
@@ -129,6 +133,9 @@ macro_rules! define_methods {
             }
             fn powi(self, n: i32) -> Self {
                 Self(self.0.powi(n))
+            }
+            fn with_biased_exponent(exp: u32) -> Self {
+                Self::from_bits((exp as Self::Bits) << Self::MANTISSA_LEN)
             }
         }
 
