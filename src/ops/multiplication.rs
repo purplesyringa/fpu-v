@@ -109,7 +109,7 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
     // Note that as long as `exp_a >= mantissa_len + 1`, the condition always holds, which means
     // that a) we're not losing much compared to independent checks, b) it also captures `NaN`s and
     // infinities.
-    let limit = (2 + (-T::MIN_EXPONENT) as u32 + T::MANTISSA_LEN) << T::MANTISSA_LEN;
+    let limit = 2 + (-T::MIN_EXPONENT) as u32 + T::MANTISSA_LEN;
     if a.abs().to_bits() + b.abs().to_bits() >= T::with_biased_exponent(limit).to_bits() {
         return a * b;
     }
