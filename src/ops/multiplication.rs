@@ -395,9 +395,32 @@ fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
 
     // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows in such
     // a way if the true product is `>= 2^(maxe+1)`. See the corresponding comment in `addition.rs`
-    // for more info; in a nutshell, we need to check if `|round(a * b)| >= 2^(maxe+1)` would hold
-    // if the exponent range was unbounded.
-    //
+    // for more info; formally, we need to check if `|round(a * b)| >= 2^(maxe+1)` would hold if the
+    // exponent range was unbounded.
+
+    if env.features().fma {
+        // With FMA available, we can rewrite `a * b >= 2^(maxe+1)` (which is different from
+        // `round(a * b)`, but not for flooring) as
+        //     a * b - 2^maxe >= 2^maxe,
+        // which for flooring is equivalent to
+        //     round(a * b - 2^maxe) >= 2^maxe.
+        // Notably, this last equivalence fails for ceiling, which means we can't use
+        //     round(|a * b| - 2^maxe) >= 2^maxe
+        // for all rounding modes and have to use mode-specific conditions.
+        let coeff = T::TWO.powi(T::MAX_EXPONENT);
+        let is_overflow = match env.get_rounding_mode() {
+            RoundingMode::ToNearest => unreachable!(),
+            RoundingMode::Floor => Fast(env.mul_add(a, b, -coeff)) >= Fast(coeff),
+            RoundingMode::Ceil => Fast(env.mul_add(a, b, coeff)) <= Fast(-coeff),
+            RoundingMode::Trunc => Fast(env.mul_add(a.abs(), b.abs(), -coeff)) >= Fast(coeff),
+            RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
+        };
+        if is_overflow {
+            env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
+        }
+        return;
+    }
+
     // Lemma: for normal numbers `x` and `y`, `round(x * y)` has a maximum exponent of
     // `exp_x + exp_y + 1`, because in worst-case scenario:
     //     x = 2^exp_x * (2 - 2^-mantissa_len)
