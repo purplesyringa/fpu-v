@@ -299,6 +299,11 @@ fn is_exact_with_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> bool {
     // 1. It overflows to a finite value, we get `fma(0, finite, 0) = 0`, and everything works fine.
     // 2. It overflows to infinity, we get `fma(0, inf, 0) = NaN`.
     // To handle (2), we treat NaN errors as exact, because NaNs don't arise otherwise.
+    //
+    // Note that we have to multiply `product` by `2^2k` in two steps because `2k > maxe`. After the
+    // first multiplication, the number is guaranteed to be normal, so we could just increase the
+    // exponent by `k` instead of doing another multiplication, but we avoid doing that to load
+    // fewer constants.
     let coeff =
         T::TWO.powi((-(T::MIN_EXPONENT - T::MANTISSA_LEN as i32) as u32).div_ceil(2) as i32);
     let error = env.mul_add(a * coeff, b * coeff, -(product * coeff) * coeff);
