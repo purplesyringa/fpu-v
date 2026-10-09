@@ -347,6 +347,7 @@ impl Env {
     /// in *arithmetic*, but it doesn't actually invert the quietness bit if the host doesn't
     /// support exceptions, so the quietness of the resulting number may still be incorrect. Don't
     /// check the quietness of the native value -- use [`Float::is_emulated_signaling_nan`] instead.
+    #[inline(always)]
     pub fn to_native<T: Float>(&self, x: T) -> T::Native {
         let mut bits = x.to_bits();
         if self.features.exceptions

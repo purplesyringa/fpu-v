@@ -5,6 +5,7 @@ use crate::{
 };
 use core::cmp::Ordering;
 
+#[inline(always)]
 pub fn add<T: Float>(a: T, b: T, env: &mut Env) -> T {
     let out = do_add(
         env.to_native(a),
@@ -28,6 +29,7 @@ pub fn sub<T: Float>(a: T, b: T, env: &mut Env) -> T {
     env.from_native_canonicalizing_nan_after_op(out)
 }
 
+#[inline(always)]
 fn do_add<T: Native, F: Float>(a: T, b: T, float1: F, float2: F, env: &mut Env) -> T {
     let sum = if let Some(round) = env.emulate_rounding_mode() {
         add_with_rounding(a, b, round, env)
@@ -43,6 +45,7 @@ fn do_add<T: Native, F: Float>(a: T, b: T, float1: F, float2: F, env: &mut Env) 
 // On hosts with exceptions, this function is responsible for raising all exceptions. On hosts
 // without exceptions, it's responsible for raising overflow if the rounded sum is finite, because
 // this condition is difficult to detect afterwards.
+#[inline(always)]
 fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) -> T {
     if round == RoundingMode::ToNearestTiesToMaxMagnitude {
         // NE addition sets the exact same flags as RMM addition. `OVERFLOW` specifically, the only
@@ -122,6 +125,7 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
 // On hosts with exceptions, this function raises `OVERFLOW` if rounding adjusts `sum` from finite
 // to infinite (e.g. largest finite float plus a tiny value under ceil). On hosts without
 // exceptions, `set_exceptions` is responsible for this instead.
+#[inline(always)]
 fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, env: &mut Env) -> T {
     if !sum.is_finite() {
         // Infinities are already handled by `add_with_rounding` gracefully for rounding modes where
@@ -223,6 +227,7 @@ fn adjust_rounding_finite<T: Native>(a: T, b: T, sum: T, round: RoundingMode, en
     sum
 }
 
+#[inline(always)]
 fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F, env: &mut Env) {
     if !sum.is_finite() {
         set_exceptions_non_finite(a, b, sum, float1, float2, env);

@@ -4,6 +4,7 @@ use crate::{
     native::{Bits, Fast, Native, Quiet},
 };
 
+#[inline(always)]
 pub fn mul<T: Float>(a: T, b: T, env: &mut Env) -> T {
     let (float1, float2) = (a, b);
     let a = env.to_native(a);
@@ -163,6 +164,7 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
 //     (((a_high * b_high - product) + a_high * b_low) + a_low * b_high) + a_low * b_low
 // }
 
+#[inline(always)]
 fn set_exceptions<T: Native, F: Float>(
     a: T,
     b: T,
