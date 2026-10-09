@@ -393,8 +393,8 @@ fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
 
     // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows in such
     // a way if the true product is `>= 2^(maxe+1)`. See the corresponding comment in `addition.rs`
-    // for more info; in a nutshell, here we just need to check if `|round(a * b)| >= 2^(maxe+1)`
-    // would hold if the exponent range was unbounded.
+    // for more info; in a nutshell, we need to check if `|round(a * b)| >= 2^(maxe+1)` would hold
+    // if the exponent range was unbounded.
     //
     // Lemma: for normal numbers `x` and `y`, `round(x * y)` has a maximum exponent of
     // `exp_x + exp_y + 1`, because in worst-case scenario:
@@ -403,28 +403,27 @@ fn set_overflow<T: Native>(a: T, b: T, env: &mut Env) {
     // ...we have:
     //     x * y = 2^(exp_x + expy) * (2 - 2^-mantissa_len)^2
     //           <= 2^(exp_x + expy + 1) * (2 - 2^-mantissa_len)
-    // ...and that implies it fits in `exp_x + exp_y + 1` regardless of the rounding mode.
+    // ...so the product fits in `exp_x + exp_y + 1` regardless of the rounding mode.
     //
-    // Now let `k = (maxe + 1) / 2`; this is always a whole number for standard floats. By the
-    // lemma, `round((a * 2^-k) * (b * 2^-k))` has a maximum possible exponent of:
+    // Let `k = (maxe + 1) / 2`, always a whole number for standard floats. By the lemma,
+    // `round((a * 2^-k) * (b * 2^-k))` has an upper bound on the exponent of `maxe`:
     //     (exp_a - k) + (exp_b - k) + 1 = exp_a + exp_b - maxe <= maxe
-    // ...so it doesn't overflow and thus rounds just like if `round(a * b)` had an unlimited
-    // exponent from the above. We can thus safely rewrite the check as:
+    // ...so it doesn't overflow and rounds just like if `round(a * b)` had an unlimited exponent
+    // from the above. We can thus write the check as:
     //     |round((a * 2^-k) * (b * 2^-k))| >= 2^(maxe+1) * 2^-2k = 1
     // ...but only as long as no underflow occurs in computing `a * 2^-k` and `b * 2^-k`.
     //
-    // Let's see when an underflow can happen and what it can affect.
-    // - Can we get a false negative? `a * 2^-k` underflows if `exp_a - k < mine`, but then
+    // Let's see what an underflow can affect.
+    // - Can a false negative happen? `a * 2^-k` underflows if `exp_a - k < mine`, which implies
     //       exp_a + exp_b + 1 <= mine + k + maxe < maxe
-    //   ...which indicates no overflow, so the answer is no.
-    // - Can we get a false positive? If `a * 2^-k` underflows, it rounds either to zero or to the
-    //   smallest subnormal depending on the rounding mode. In the former case, the condition
-    //   simplifies to `0 >= 1` and fails. In the latter case, we get:
+    //   ...which indicates no overflow, so no.
+    // - Can a false positive happen? If `a * 2^-k` underflows, it rounds either to zero or to the
+    //   smallest subnormal depending on the rounding mode. In the worst-case scenario, we get:
     //       2^(mine-mantissa_len) * |b * 2^-k| < 2^(mine-mantissa_len) * 2^(maxe+1-k)
     //           = 2^((mine + maxe) - mantissa_len + 1 - k)
     //           = 2^(1 - mantissa_len + 1 - k)
     //           < 1,
-    //   so the comparison fails again and the answer is no.
+    //   ...so the comparison fails, correctly.
     let coeff = T::TWO.powi(-(T::MAX_EXPONENT + 1) / 2);
     if Fast(((a * coeff) * (b * coeff)).abs()) >= Fast(T::ONE) {
         env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
@@ -439,38 +438,22 @@ fn lowest_bit_set<T: Native>(x: T) -> T {
     #[cfg(not(feature = "explore"))]
     assert!(x.is_finite(), "non-finite input to lowest_bit_set");
 
-    // The formulas below are completely broken for zeros (they either return the wrong values or
-    // mess up something else), which is why this function shouldn't be invoked on zeros. We could
-    // fix that with special-casing, but that's slow and unnecessary.
+    // The formulas below are broken for zeros.
     #[cfg(not(feature = "explore"))]
     assert!(Fast(x) != Fast(T::ZERO), "zero input to lowest_bit_set");
 
-    // There are two ways to find the lowest bit:
-    // 1. With bit twiddling alone, we can essentially replicate a small part of a soft FPU. That
-    //    mainly requires adding the exponent to the ctz of the mantissa. It's not slow on any
-    //    modern CPUs, but since we're on the "no host exceptions" path, chances are we're not on
-    //    a modern CPU and we don't have native ctz (or we're running on Wasm).
-    // 2. By combining bit twiddling with FP operations, we get somewhat simpler logic, but, what's
-    //    more important, it can be *vectorized* between `a` and `b`. This provides a large speedup
-    //    over bit twiddling even with native ctz available, as long as SIMD is present, and for
-    //    Wasm it feels fair to assume that it is.
-    // A major difference between these two approaches is that the former returns the *index* of the
-    // bit, while the latter returns `2^k` itself. This function implements the latter approach, but
-    // an untested snippet for the former is provided below in case we need it for some platform.
+    // We can find the lowest bit either with bit twiddling or by using FP operations. The latter
+    // is preferable because it can be vectorized, while the former requires ctz, and this code path
+    // is most likely reached on targets like Wasm, where vectorization is available.
 
-    // As long as the mantissa is non-zero, `x & (x - 1)` unsets its lowest bit, and then
-    // `x - (x & (x - 1))` returns a float corresponding to that bit. This can't underflow because
-    // subnormals can always represent 1 ulp of any float, and this is at least 1 ulp.
-    //
-    // For a zero mantissa, we have a power of two, so `x` itself is the correct answer. We mask out
-    // the subtrahend instead of blending as an optimization (this retains the correct sign because
-    // `x` is non-zero). We also use `x & !MANTISSA_MASK == x` instead of `x & MANTISSA_MASK == 0`
-    // to check for a zero mantissa so that the comparison runs on FP numbers and not integers,
-    // because SSE2 doesn't support 64-bit integer SIMD comparisons, but supports `double` SIMD
-    // comparisons.
     x - if Fast(T::from_bits(x.to_bits() & !T::MANTISSA_MASK)) == Fast(x) {
+        // The lowest bit of a power of two is `x` itself. We mask out the subtrahend instead of
+        // blending `x` in as an optimization. We use `x & !MANTISSA_MASK == x` instead of
+        // `x & MANTISSA_MASK == 0` so that the comparison runs on FP numbers and not integers,
+        // because SSE2 doesn't support 64-bit integer SIMD comparisons.
         T::ZERO
     } else {
+        // `x & (x - 1)` drops the lowest bit
         T::from_bits(x.to_bits() & x.nudge(-1).to_bits())
     }
 
@@ -489,11 +472,8 @@ fn lowest_bit_fit_abs<T: Native>(x: T) -> T {
 
     let exp_bits = x.to_bits() & T::EXPONENT_MASK;
     if exp_bits == T::Bits::ZERO {
-        // This almost always means `x` is a subnormal. If `x` is a zero, it means that the product
-        // `a * b` underflowed to `0` while `a != 0` and `b != 0`, which shouldn't commonly occur.
-        // This evaluation is constant, and it's only consumed by a comparison, so this doesn't
-        // enter microcode and we don't have to worry about zeros getitng slowed down by anything
-        // other than branch prediction.
+        // This almost always means `x` is a subnormal. `x = 0` happens only if the product `a * b`
+        // underflows to `0` while `a != 0` and `b != 0`, which shouldn't commonly occur.
         T::TWO.powi(T::MIN_EXPONENT) * factor
     } else {
         T::from_bits(exp_bits) * factor
