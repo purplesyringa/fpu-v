@@ -28,6 +28,7 @@ pub trait Native:
     + Sub<Output = Self>
     + Mul<Output = Self>
     + Div<Output = Self>
+    + Fma
     + Compare
 {
     type Bits: Bits;
@@ -64,7 +65,6 @@ pub trait Native:
     /// Note that the unbiased exponent is `biased_exponent - 1 - MIN_EXPONENT`, not
     /// `biased_exponent - MIN_EXPONENT`, due to the presence of subnormal values.
     fn biased_exponent(self) -> u32;
-    fn mul_add(self, b: Self, c: Self) -> Self;
     /// Compute `self^n` without setting flags. Useful only for constants.
     fn powi(self, n: i32) -> Self;
     /// Places `exp` above a zeroed mantissa.
@@ -127,9 +127,6 @@ macro_rules! define_methods {
             }
             fn biased_exponent(self) -> u32 {
                 ((self.to_bits() & Self::EXPONENT_MASK) >> Self::MANTISSA_LEN) as u32
-            }
-            fn mul_add(self, b: Self, c: Self) -> Self {
-                Self(self.0.mul_add(b.0, c.0))
             }
             fn powi(self, n: i32) -> Self {
                 Self(self.0.powi(n))
@@ -287,6 +284,42 @@ define_binop!(Add(add) for F64 => addsd);
 define_binop!(Sub(sub) for F64 => subsd);
 define_binop!(Mul(mul) for F64 => mulsd);
 define_binop!(Div(div) for F64 => divsd);
+
+pub trait Fma {
+    fn mul_add(self, b: Self, c: Self) -> Self;
+}
+
+macro_rules! define_fma {
+    ($ty:ident => $insn:ident) => {
+        impl Fma for $ty {
+            fn mul_add(self, b: Self, c: Self) -> Self {
+                #[cfg(feature = "explore")]
+                return Self(self.0.mul_add(b.0, c.0));
+
+                let mut out = Self(0.0);
+                let mut env = get_env().to_mxcsr();
+                unsafe {
+                    asm!(
+                        "ldmxcsr [{3}]",
+                        concat!(stringify!($insn), " {0}, {1}, {2}"),
+                        "stmxcsr [{3}]",
+                        "ldmxcsr [{4}]", // don't forget to restore default environment to avoid UB
+                        inout(xmm_reg) c.0 => out.0,
+                        in(xmm_reg) self.0,
+                        in(xmm_reg) b.0,
+                        in(reg) &mut env,
+                        in(reg) &0x1f80u32,
+                    );
+                }
+                set_env(Env::from_mxcsr(env));
+                out
+            }
+        }
+    };
+}
+
+define_fma!(F32 => vfmadd231ss);
+define_fma!(F64 => vfmadd231sd);
 
 pub trait Compare {
     fn signaling_cmp(&self, rhs: &Self) -> Option<Ordering>;
