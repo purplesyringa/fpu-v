@@ -368,13 +368,14 @@ fn is_exact_without_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> boo
     // unconditionally: while it seems like `(bit_b * 2).nudge(1)` can be larger than `bit_b * 2`
     // only by 50% at worst (when `bit_b` is the smallest subnormal), this stops being true once
     // it's multiplied by `bit_a`, e.g. under ceiling we can get a 100% increase compared to
-    // `bit_a * (bit_b * 2)`.
+    // `bit_a * (bit_b * 2)`. We also can't nudge the exponent up by one, because that breaks on
+    // subnormals.
     //
     // More notes:
     //
-    // Multiplying by 2 and not `2^mantissa_len`, which would simplify some logic, is necessary,
-    // because even 4 allows `b = 2^maxe * (1 + 0.5)` to cause an inexact product while overflowing
-    // to `+inf` on the `* 4`.
+    // Multiplying by 2 and not `2^mantissa_len`, which would simplify some logic, is necessary
+    // because even just multiplying by 4 allows `b = 2^maxe * (1 + 0.5)` to cause an inexact
+    // product while overflowing to `+inf` on the `* 4`.
     //
     // We can invoke `lowest_bit_fit` on a zero input if the product is below the range of
     // subnormals. In this case, treating a zero `product` as a subnormal is correct from the
