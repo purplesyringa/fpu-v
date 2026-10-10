@@ -339,8 +339,8 @@ fn is_exact_without_fma<T: Native>(a: T, b: T, product: T, env: &mut Env) -> boo
         return true;
     }
 
-    // This should be vectorized, Rust refuses to do that for some reason, probably due to the
-    // number of nested trivial functions.
+    // This should be vectorized over `a` and `b`. Rust refuses to do that for some reason, probably
+    // due to the number of nested trivial functions.
     let bit_a = lowest_bit_set(a);
     let bit_b = lowest_bit_set(b);
     let bit_product = lowest_bit_fit_abs(product);
@@ -472,20 +472,16 @@ fn lowest_bit_set<T: Native>(x: T) -> T {
     #[cfg(not(feature = "explore"))]
     assert!(Fast(x) != Fast(T::ZERO), "zero input to lowest_bit_set");
 
-    // We can find the lowest bit either with bit twiddling or by using FP operations. The latter
-    // is preferable because it can be vectorized, while the former requires ctz, and this code path
-    // is most likely reached on targets like Wasm, where vectorization is available.
+    // We can find the lowest bit either by adding the exponent to the ctz of the mantissa manually,
+    // or by mixing bit twiddling with FP operations. The latter is preferable because it can be
+    // vectorized, while the former requires ctz, and this code path is most commonly reached on
+    // targets like Wasm, where vectorization is available.
 
-    x - if Fast(T::from_bits(x.to_bits() & !T::MANTISSA_MASK)) == Fast(x) {
-        // The lowest bit of a power of two is `x` itself. We mask out the subtrahend instead of
-        // blending `x` in as an optimization. We use `x & !MANTISSA_MASK == x` instead of
-        // `x & MANTISSA_MASK == 0` so that the comparison runs on FP numbers and not integers,
-        // because SSE2 doesn't support 64-bit integer SIMD comparisons.
-        T::ZERO
-    } else {
-        // `x & (x - 1)` drops the lowest bit
-        T::from_bits(x.to_bits() & x.nudge(-1).to_bits())
-    }
+    // This is essentially just `x fp- (x & !(x - 1))`, but with extra logic to handle zeroed
+    // mantissa without overflowing into the exponent. Don't ask me how I fit this in 4 operations,
+    // this formula was found by brute-force.
+    let a = x.to_bits() & !T::MANTISSA_MASK;
+    T::from_bits(x.to_bits() & (a - x.to_bits())) - T::from_bits(a)
 
     // Bit twidding-only implementation returning the index `k`:
     //     let exp = x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXP; // max(1) for subnormals
