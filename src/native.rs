@@ -171,6 +171,7 @@ pub trait Bits:
     + LowerHex
     + BitXorAssign
     + Add<Output = Self>
+    + Sub<Output = Self>
     + BitAnd<Output = Self>
     + BitOr<Output = Self>
     + Shr<u32, Output = Self>
