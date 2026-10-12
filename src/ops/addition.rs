@@ -83,6 +83,7 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         return adjust_rounding_finite(a, b, a + b, round, env);
     }
 
+    // `a` and `b` are large enough not to underflow at this point.
     let half_a = a * T::HALF;
     let half_b = b * T::HALF;
 
