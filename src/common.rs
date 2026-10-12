@@ -129,10 +129,6 @@ pub fn compute_emulating_rounding<T: Native>(
     // the incorrect `exact result >= 2^maxe`, but rather matches the correct
     // `round_unbounded(exact result) >= 2^maxe`.
     let result = lift(reduced_result);
-    if result.is_infinite() && !env.features().exceptions {
-        // Handled here because it's difficult to detect post-factum in `set_exceptions`.
-        env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
-    }
 
     let saturate_to_finite = match round {
         RoundingMode::ToNearest => unreachable!(),
@@ -144,6 +140,11 @@ pub fn compute_emulating_rounding<T: Native>(
         RoundingMode::Trunc => Fast(result.abs()) == Fast(T::INFINITY),
         RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
     };
+
+    if saturate_to_finite && !env.features().exceptions {
+        // Handled here because it's difficult to detect post-factum in `set_exceptions`.
+        env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
+    }
 
     result.nudge(if saturate_to_finite { -1 } else { 0 })
 }
