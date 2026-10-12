@@ -72,7 +72,8 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
                     >= Fast(T::TWO.powi(T::MAX_EXPONENT - T::MANTISSA_LEN as i32 - 1))
         },
         || {
-            // The reasoning behind this logic depends on whether we have exceptions.
+            // Computes `(a + b) * 0.5` without overflows. The reasoning behind this logic depends
+            // on whether we have exceptions.
             //
             // If we do, `compute_emulating_rounding` promises that `may_overflow` has returned
             // `true`, so `a` and `b` aren't subnormals (though they may be infinite or NaN), and
@@ -85,7 +86,8 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
             // don't have exceptions.
             a * T::HALF + b * T::HALF
         },
-        |half_sum| sum_error(a * T::HALF, b * T::HALF, half_sum),
+        |reduced_sum| sum_error(a * T::HALF, b * T::HALF, reduced_sum),
+        |reduced_sum| reduced_sum * T::TWO,
         round,
         env,
     )

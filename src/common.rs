@@ -6,6 +6,20 @@ use core::cmp::Ordering;
 
 /// Compute the value of an operation with emulated rounding.
 ///
+/// This function implements an algorithm that raises the correct exceptions and handles rounding
+/// near the `2^(maxe+1)` boundary correctly in all situations. It works roughly like this:
+///
+/// - If the inputs are small enough that the operation can't overflow to infinity, just compute it.
+/// - Otherwise, scale down the inputs by some constant like `2^-k` such that the operation can no
+///   longer overflow, analyze and round the result, and scale it back to determine overflow.
+///
+/// Notably, the second step has to be done in such a round-about way instead of using a predicate
+/// because no cheap predicates for overflow exist for non-native rounding modes. For example,
+/// `a * b >= 2^(maxe+1)` cannot be checked with FMA because `2^(maxe+1)` is not representable, and
+/// `a * b - 2^maxe >= 2^maxe` rounds inconsistently with to-nearest vs flooring.
+///
+/// This function takes quite a few specific primitives as input:
+///
 /// - `op()` defines the operation: it returns the NE-rounded result, i.e. `round(exact result)`.
 ///
 /// - `error(result)` defines the error from NE rounding: it returns a value `error` such that
@@ -15,16 +29,28 @@ use core::cmp::Ordering;
 /// - `may_overflow()` provides a heuristic for whether the result may overflow in NE mode (not the
 ///   emulated mode!). This heuristic should be high-quality, but may not have false negatives.
 ///   Propagating infinity from an infinite input is not considered an overflow, so it doesn't
-///   matter if the caller decides to return `false` or `true` in this case.
+///   matter if the caller decides to return `false` or `true` in this case. `may_overflow` should
+///   generally not raise exceptions, though it's technically allowed to raise overflow if the
+///   calculation would overflow regardless of the rounding mode (which in practice means the
+///   mathematical result is above `2^(maxe+1)`).
 ///
-/// - `half_op()` defines the operation with the result halved *prior to* rounding, i.e.
-///   `round(exact result * 0.5)`. This detail affects e.g. overflows: if `op()` returns infinity,
-///   `half_op()` might still have to return a finite value. To make this computation efficient,
-///   `half_op` may assume that one of the following conditions hold:
+/// - `reduced_op()` defines the operation with the mathematical result multiplied by some `2^-k`
+///   *prior to* rounding, i.e. `round(exact result * 2^-k)`. This detail affects e.g. overflows: if
+///   `op()` returns infinity, `reduced_op()` might still have to return a finite value.
+///   `reduced_op()` must raise the same flags as `op()` would had the exponent range been
+///   unbounded; specifically, this means that the multiplication by `2^-k` as implemented by
+///   `reduced_op` must not cause underflows, and the computation must not overflow. To enable this,
+///   `reduced_op()` may assume that one of the following conditions hold:
 ///   - If the host supports exceptions: `may_overflow()` has returned `true`.
 ///   - If the host doesn't support exceptions: `op()` has returned infinity.
+///   There is one exception to this rule, used by multiplication: if the host doesn't support
+///   exceptions and `op()` returned infinity, it may not be possible to efficiently produce
+///   infinity if an input was infinite. In such a scenario, it's allowed to produce `NaN` instead.
 ///
-/// - `half_error(half_result)` defines the error from `half_op` with the same meaning as `error`.
+/// - `reduced_error(reduced_result)` defines the error from `reduced_op` with the same meaning as
+///   `error`.
+///
+/// - `lift(reduced_result)` computes `reduced_result * 2^k`.
 ///
 /// On hosts with exceptions, this function raising all exceptions assuming that `op` raises the
 /// correct exceptions for NE mode. On hosts without exceptions, this function raises overflow if
@@ -35,8 +61,9 @@ pub fn compute_emulating_rounding<T: Native>(
     op: impl FnOnce() -> T,
     error: impl FnOnce(T) -> T,
     may_overflow: impl FnOnce() -> bool,
-    half_op: impl FnOnce() -> T,
-    half_error: impl FnOnce(T) -> T,
+    reduced_op: impl FnOnce() -> T,
+    reduced_error: impl FnOnce(T) -> T,
+    lift: impl FnOnce(T) -> T,
     round: RoundingMode,
     env: &mut Env,
 ) -> T {
@@ -58,11 +85,23 @@ pub fn compute_emulating_rounding<T: Native>(
     // This condition is expensive to detect post-factum with emulated rounding modes, which is why
     // we detect it here. To avoid performance issues, we only do so when the result actually might
     // have overflowed.
+    let reduced_result;
     if env.features().exceptions {
         // With exceptions, `op()` can erroneously raise the overflow flag, so we need an indirect
         // check. XXX: what about underflow?
         if !may_overflow() {
             return adjust_rounding_finite(op(), error, round, env);
+        }
+
+        core::hint::cold_path();
+
+        // Sets the same flags as `op()`, except for overflow (and underflow? XXX).
+        reduced_result = reduced_op();
+        if !reduced_result.is_finite() {
+            // The actual result is `NaN` or an infinity was propagated from `a` or `b`.
+            // `reduced_op()` must have already set the right flags, and we don't need to worry
+            // about adjusting infinity to a finite value ecause `reduced_op` cannot overflow.
+            return reduced_result;
         }
     } else {
         // Without exceptions, checking `op()` for infinity is the most obviously correct test.
@@ -70,40 +109,39 @@ pub fn compute_emulating_rounding<T: Native>(
         if !result.is_infinite() {
             return adjust_rounding_finite(result, error, round, env);
         }
-    }
 
-    core::hint::cold_path();
+        core::hint::cold_path();
 
-    // Sets the same flags as `a + b`, except for overflow (and underflow? XXX).
-    let half_result = half_op();
-    if !half_result.is_finite() {
-        // The actual result is `NaN`, or `a` or `b` must have been infinite, quit immediately so
-        // that we don't raise more exceptions or try to adjust it to a finite value.
-        return half_result;
+        reduced_result = reduced_op();
+        if !reduced_result.is_finite() {
+            // This is an important detail! We return `result` instead of `reduced_result` here,
+            // because `reduced_op` may actually produce `NaN` instead of infinity in edge cases
+            // like this one.
+            return result;
+        }
     }
 
     // Shouldn't overflow or return non-finite values.
-    let half_result = adjust_rounding_finite(half_result, half_error, round, env);
+    let reduced_result = adjust_rounding_finite(reduced_result, reduced_error, round, env);
 
-    // Almost a correct result, except for saturating to `+-inf` instead of finite values. This
-    // raises overflow if `|half_result| >= 2^maxe`, which is correct because it applies to
-    // a *rounded* version of `half_result` as opposed to the exact one, so it's equivalent to
-    // `|result| >= 2^(maxe+1)` as if the exponent was unbounded.
-    let result = half_result * T::TWO;
+    // Almost a correct result, except for saturating to `+-inf` instead of finite values. This line
+    // raises overflow if `reduced_result * 2^k >= 2^maxe`, which is notably not the same thing as
+    // the incorrect `exact result >= 2^maxe`, but rather matches the correct
+    // `round_unbounded(exact result) >= 2^maxe`.
+    let result = lift(reduced_result);
     if result.is_infinite() && !env.features().exceptions {
         // Handled here because it's difficult to detect post-factum in `set_exceptions`.
         env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
     }
 
-    let limit = T::TWO.powi(T::MAX_EXPONENT);
     let saturate_to_finite = match round {
         RoundingMode::ToNearest => unreachable!(),
         // Flooring saturates a very positive output to the largest representable float, but a very
         // negative output to `-inf`, because `-inf` is <= every finite value. So we can't just
         // compare absolute values here and need per-mode logic.
-        RoundingMode::Floor => Fast(half_result) >= Fast(limit),
-        RoundingMode::Ceil => Fast(half_result) <= Fast(-limit),
-        RoundingMode::Trunc => Fast(half_result.abs()) >= Fast(limit),
+        RoundingMode::Floor => Fast(result) == Fast(T::INFINITY),
+        RoundingMode::Ceil => Fast(result) == Fast(-T::INFINITY),
+        RoundingMode::Trunc => Fast(result.abs()) == Fast(T::INFINITY),
         RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
     };
 

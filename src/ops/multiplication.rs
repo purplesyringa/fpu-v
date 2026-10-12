@@ -1,6 +1,6 @@
 use crate::{
     Env, Exceptions, Float, RoundingMode,
-    common::set_exceptions_non_finite,
+    common::{compute_emulating_rounding, set_exceptions_non_finite},
     native::{Bits, Fast, Native, Quiet},
 };
 
@@ -11,8 +11,7 @@ pub fn mul<T: Float>(a: T, b: T, env: &mut Env) -> T {
     let b = env.to_native(b);
 
     let product = if let Some(round) = env.emulate_rounding_mode() {
-        // TODO
-        unimplemented!()
+        mul_with_rounding(a, b, round, env)
     } else if env.features().exceptions && !env.features().underflow_after_rounding {
         mul_with_underflow(a, b)
     } else {
@@ -27,6 +26,82 @@ pub fn mul<T: Float>(a: T, b: T, env: &mut Env) -> T {
     // NaNs are autocanonicalized on platforms that support that.
     env.from_native_canonicalizing_nan_after_op(product)
 }
+
+// On hosts with exceptions, this function is responsible for raising all exceptions. On hosts
+// without exceptions, it's responsible for raising overflow if the rounded product is finite and
+// underflow, because these conditions are difficult to detect afterwards.
+#[inline(always)]
+fn mul_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) -> T {
+    let k = (T::MAX_EXPONENT as u32).div_ceil(2) as i32 + 1;
+    let coeff = T::TWO.powi(-k);
+    compute_emulating_rounding(
+        || a * b,
+        |product| product_error(a, b, product),
+        || {
+            // We'd like to write a condition without FP operations that implies
+            //     |a * b| < 2^maxe * (2 - 2^-(mantissa_len+1))
+            // and holds as often as possible. We can do that by computing a bitwise sum of `a` and
+            // `b` and inspecting the resulting exponent, which is roughly correlated with
+            // `log2 |a * b|`.
+            //
+            // Let's formalize this. For a number `a` with an unbiased exponent `k`, we have:
+            //     |a| <= 2^k * (2 - 2^-mantissa_len).
+            // Note that this holds even for subnormals. Therefore,
+            //     |a * b| <= 2^(k_a + k_b) * (2 - 2^-mantissa_len)^2
+            //              < 2^(k_a + k_b + 1) * (2 - 2^-(mantissa_len+1)),
+            // so as long as the exponent field in the sum of `a` and `b` is at most `maxe - 1`
+            // (adjusting for bias), we're golden.
+            let limit =
+                T::with_biased_exponent((-(T::MIN_EXPONENT - 1) * 2 + T::MAX_EXPONENT) as u32);
+            // We'd need an `&` for `abs` anyway, so might as well filter out the mantissa to avoid
+            // dealing with the mantissa overflowing into the exponent.
+            (a.to_bits() & T::EXPONENT_MASK) + (b.to_bits() & T::EXPONENT_MASK) >= limit.to_bits()
+        },
+        || {
+            // If the host supports exceptions, `may_overflow` must have returned `true` and thus
+            // `k_a + k_b >= maxe`. While `|a| >= 2^k_a` doesn't hold in general due to subnormals,
+            // we still have:
+            //     |a| >= 2^(k_a - mantissa_len + 1)
+            // ...as long as `a` is non-zero. Since at most one of `a` and `b` can be subnormal
+            // while still triggering `may_overflow`, this implies that:
+            //     |a * b| >= 2^(k_a + k_b - mantissa_len + 1) >= 2^(maxe - mantissa_len + 1).
+            //
+            // If the host doesn't support exceptions, `a * b` must have been rounded to infinity
+            // (or there were infinities originally), which also trivially implies
+            //     |a * b| >= 2^(maxe - mantissa_len + 1).
+            //
+            // From this and `|a|, |b| < 2^(maxe + 1)` (assuming there are no infinities), we get
+            // `|a|, |b| >= 2^-mantissa_len`.
+            //
+            // Let `k = ceil(maxe / 2) + 1`. Then
+            //     |a * 2^-k|, |b * 2^-k| >= 2^(-mantissa_len + k) > 2^mine,
+            // which means underflow doesn't occur during multiplication by `2^-k`, and
+            //     |(a * 2^-k) * (b * 2^-k)| < 2^(2 * (maxe + 1 - k)) <= 2^maxe
+            //     |(a * 2^-k) * (b * 2^-k)| >= 2^(maxe - mantissa_len + 1 - 2*k) >= 2^mine,
+            // which means no overflow or underflow occurs during the multiplication of the two
+            // reduced numbers.
+            //
+            // Note that we couldn't just multiply `a` or `b` by `2k` alone, since then they could
+            // underflow.
+            //
+            // Special cases:
+            // - If `a` is zero, `may_overflow` may only return `true` if `k_b >= maxe`, which
+            //   implies that `b * coeff` can't overflow. In the no-exceptions case, multiplying by
+            //   zero cannot produce infinity.
+            // - If `a` is infinite, `k_a + k_b >= maxe` implies `k_b >= -1`, so multiplying by
+            //   `2^-k` still can't underflow. In the no-exceptions case, underflow can occur and
+            //   cause `NaN` to be produced instead of infinity. `compute_emulating_rounding`
+            //   handles this gracefully.
+            (a * coeff) * (b * coeff)
+        },
+        |reduced_product| product_error(a * coeff, b * coeff, reduced_product),
+        |reduced_product| reduced_product * T::TWO.powi(2 * k),
+        round,
+        env,
+    )
+}
+
+fn product_error<T: Native>(x: T, y: T, z: T) -> T {panic!()}
 
 // XXX: this function is untested because my hardware (x86) never uses it
 fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
@@ -226,7 +301,7 @@ fn set_exceptions<T: Native, F: Float>(
     //
     // Note that `a * (b * 2)` needs to be computed with the same rounding mode as `product` was
     // computed originally, so this logic only runs for native modes, and emulated ones are handled
-    // by `mul_with_rounding` instead (XXX).
+    // by `mul_with_rounding` instead.
     if env.emulate_rounding_mode().is_none() {
         let limit = T::TWO.powi(T::MIN_EXPONENT + 1);
         let is_underflow = Fast((a * (b * T::TWO)).abs()) < Fast(limit);
