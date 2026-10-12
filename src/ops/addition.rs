@@ -55,35 +55,55 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
     }
 
     // For every mode but NE and RMM, it's possible that correctly rounded `a + b` is finite, but
-    // rounded to nearest it's infinite. For example, a sum slightly below +inf rounds to +inf with
-    // NE, but floors to a finite value. This can erroneously raise the overflow flag, so we aren't
-    // allowed to compute `a + b` here (at least without saving exceptions, which is costly).
+    // rounded to nearest it's infinite. For example, a sum slightly below `2^(maxe+1)` rounds to
+    // +inf with NE, but floors to the largest finite value. This can inadvertently raise the
+    // overflow flag when it shouldn't be raised. Compare this to a situation where the overflow
+    // does happen, e.g. for a sum `>= 2^(maxe+1)`: both NE and floor return the same result, i.e.
+    // the largest finite value, but the overflow flag is different.
     //
-    // There is another problem with using `a + b`. Flooring is defined as taking the largest
-    // representable float less than or equal to the exact value, which implies that if `a` and `b`
-    // are large finite numbers, `floor(a + b)` should be the largest representable float, *not*
-    // `+inf`. (But a very negative number still saturates to `-inf`.) It's difficult to separate
-    // infinities returned by NE in this case vs when `a + b` merely rounds up to `+inf`, but would
-    // be finite with flooring.
-    //
-    // We can kill two birds with one stone by computing `a/2 + b/2` instead: it doesn't overflow
-    // and retains the same information as `a + b`, moving the "real overflow" boundary to `2^maxe`,
-    // and allowing us to safely handle overflow and saturation in a centralized manner.
-    //
-    // The only issue with using `a/2` and `b/2` are underflows, which we have to handle separately.
-    let limit = T::TWO.powi(T::MIN_EXPONENT + 1);
-    // Make sure not to trigger exceptions on NaN.
-    if Quiet(a.abs()) < Quiet(limit) || Quiet(b.abs()) < Quiet(limit) {
-        core::hint::cold_path();
-
-        // Adding a very small value to a finite value never overflows in NE mode, so `a + b`
-        // doesn't raise the overflow flag. And while such addition can overflow in floor mode, it
-        // can only do so in the negative direction, which saturates to `-inf`, so there is no need
-        // to handle saturation to finite values here.
-        return adjust_rounding_finite(a, b, a + b, round, env);
+    // This condition is expensive to detect post-factum with emulated rounding modes, which is why
+    // we detect it here. To avoid performance issues, we only do so when the sum actually might
+    // have overflowed.
+    if !env.features().exceptions {
+        // Without exceptions, checking `a + b` for infinity is the most obviously correct test.
+        let sum = a + b;
+        if !sum.is_infinite() {
+            return adjust_rounding_finite(a, b, sum, round, env);
+        }
+        // Since adding a very small value to a finite value never overflows in NE mode, if we get
+        // to this point, `a` and `b` are guaranteed to be large.
+    } else {
+        // With exceptions, though, `a + b` can erroneously raise the overflow flag, so we need
+        // an indirect check. We use two conditions to test that.
+        //
+        // First, `max(|a|, |b|) < 2^maxe` recognizes the most common case by magnitude.
+        //
+        // For reasons explained below, we need to ensure that this arm also catches subnormal
+        // inputs (adding a subnormal never causes an overflow). But we can do slightly better than
+        // looking for subnormals exclusively. Notice that as long as
+        //     min(|a|, |b|) < 2^(maxe-manissa_len-1),
+        // combining with
+        //     |a|, |b| <= 2^maxe * (2 - 2^-mantissa_len)
+        // gives:
+        //     |a + b| < 2^maxe * (2 - 2^-mantissa_len) + 2^(maxe-manissa_len-1)
+        //         = 2^maxe * (2 - 2^-(mantissa_len+1)),
+        // ...which implies no NE overflow.
+        let a_bits = a.abs().to_bits();
+        let b_bits = b.abs().to_bits();
+        // Make sure not to trigger exceptions on NaN, but still capture NaN inputs
+        if !(Quiet(T::from_bits(a_bits.max(b_bits))) >= Quiet(T::TWO.powi(T::MAX_EXPONENT)))
+            || Fast(T::from_bits(a_bits.min(b_bits)))
+                < Fast(T::TWO.powi(T::MAX_EXPONENT - T::MANTISSA_LEN as i32 - 1))
+        {
+            return adjust_rounding_finite(a, b, a + b, round, env);
+        }
     }
 
-    // `a` and `b` are large enough not to underflow at this point.
+    core::hint::cold_path();
+
+    // By this point, we know that `a` and `b` are not subnormals (though possibly infinite or NaN),
+    // so we can compute `a/2 + b/2`, be certain that it doesn't overflow, round it correctly, and
+    // multiply by `2` while taking overflow-to-finite semantics into account.
     let half_a = a * T::HALF;
     let half_b = b * T::HALF;
 
@@ -99,9 +119,9 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
     // Shouldn't overflow or return non-finite values.
     let half_sum = adjust_rounding_finite(half_a, half_b, half_sum, round, env);
 
-    // Almost a correct sum, except for saturating to `+-inf` instead of finite values. Raises
-    // overflow if `|half_sum| >= 2^maxe`, which is correct since we want to raise overflow
-    // regardless of whether we saturate to a finite value or infinity.
+    // Almost a correct sum, except for saturating to `+-inf` instead of finite values. This raises
+    // overflow if `|half_sum| >= 2^maxe`, which is correct because it applies to a *rounded*
+    // version of `a/2 + b/2` as opposed to the exact one.
     let sum = half_sum * T::TWO;
     if sum.is_infinite() && !env.features().exceptions {
         // Handled here because it's difficult to detect post-factum in `set_exceptions`.
@@ -296,7 +316,7 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
         // decrease the exponent with integer arithmetic, which is clearly correct except when
         // `|a| < 2^(mine + 1)` (or similarly with `b`). The intended result in this case is always
         // `false`, and it turns out that we always get there:
-        // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a denormal that is slightly
+        // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a subnormal that is slightly
         //   different, but still small enough not to affect anything.
         // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum. It can
         //   be an sNaN, which would raise an unexpected exception, but this function is only used
