@@ -41,9 +41,6 @@ fn do_add<T: Native, F: Float>(a: T, b: T, float1: F, float2: F, env: &mut Env) 
     sum
 }
 
-// On hosts with exceptions, this function is responsible for raising all exceptions. On hosts
-// without exceptions, it's responsible for raising overflow if the rounded sum is finite, because
-// this condition is difficult to detect afterwards.
 #[inline(always)]
 fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) -> T {
     compute_emulating_rounding(
@@ -54,8 +51,8 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
             //
             // First, `max(|a|, |b|) < 2^maxe` recognizes the most common case by magnitude.
             //
-            // To make `half_op` fast, we also need to ensure that this arm catches subnormal inputs
-            // (since adding a subnormal never causes an overflow in NE mode). But we can do
+            // To make `half_op` fast, we also need to catch subnormal inputs (which is correct
+            // because adding a subnormal never causes an overflow in NE mode). But we can do
             // slightly better than looking for subnormals exclusively. Notice that as long as:
             //     min(|a|, |b|) < 2^(maxe-manissa_len-1),
             // ...combining it with:
@@ -66,28 +63,20 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
             // ...which implies no NE overflow.
             let a_bits = a.abs().to_bits();
             let b_bits = b.abs().to_bits();
-            // Make sure not to trigger exceptions on NaN, but still capture NaN inputs
+            // Make sure not to trigger exceptions on NaN; arithmetic with NaN cannot overflow.
             Quiet(T::from_bits(a_bits.max(b_bits))) >= Quiet(T::TWO.powi(T::MAX_EXPONENT))
                 && Fast(T::from_bits(a_bits.min(b_bits)))
                     >= Fast(T::TWO.powi(T::MAX_EXPONENT - T::MANTISSA_LEN as i32 - 1))
         },
         || {
-            // Computes `(a + b) * 0.5` without overflows. The reasoning behind this logic depends
-            // on whether we have exceptions.
-            //
-            // If we do, `compute_emulating_rounding` promises that `may_overflow` has returned
-            // `true`, so `a` and `b` aren't subnormals (though they may be infinite or NaN), and
-            // thus we can compute `a/2 + b/2` without risking underflow.
-            //
-            // If we don't, the sum must be infinite, which can happen either due to benevolent
-            // overflow (which implies lack of subnormal inputs), or because one of the inputs was
-            // infinite, in which case we'll just forward infinity -- and possibly cause
-            // an underflow when handling the other argument, but that doesn't matter because we
-            // don't have exceptions.
+            // Computes `(a + b) * 0.5` without overflows. `compute_emulating_rounding` promises
+            // that `may_overflow` has returned `true`, so `a` and `b` aren't subnormals, and thus
+            // we can compute `a/2 + b/2` without risking underflow.
             a * T::HALF + b * T::HALF
         },
         |reduced_sum| sum_error(a * T::HALF, b * T::HALF, reduced_sum),
         |reduced_sum| reduced_sum * T::TWO,
+        || a.is_finite() && b.is_finite(),
         round,
         env,
     )
@@ -99,7 +88,7 @@ fn sum_error<T: Native>(a: T, b: T, sum: T) -> T {
     // return a non-finite error even for finite inputs in edge cases.
     //
     // Note that the sign of the error indicates the direction that cancels the rounding, not the
-    // direction rounding was performed towards.
+    // direction rounding was performed towards. In other words, `a + b = sum + error`.
     //
     // Computing this does not raise any exceptions because everything is exact.
     //
@@ -144,28 +133,49 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
 
     // Addition can never underflow, so we don't need to test for it.
 
-    if env.features().round
-        && matches!(
-            env.get_rounding_mode(),
-            RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
-        )
-    {
-        // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows in
-        // such a way if the true sum is `>= 2^(maxe+1)`. Generally speaking, any sum with
-        // an absolute value `>= 2^(maxe+1)` overflows, but whenever it returns infinity it's easier
-        // to handle. IEEE-754 says overflow happens if the *rounded* value, assuming an unlimited
-        // exponent, doesn't fit, so what we actually want to check here is
-        // `|round(a + b)| >= 2^(maxe+1)`. For hosts without rounding mode support, this is already
-        // handled by `compute_emulating_rounding`, but for powerful hosts we need extra wiring.
+    if !matches!(
+        env.get_rounding_mode(),
+        RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
+    ) {
+        return;
+    }
+    // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows in such
+    // a way if the true sum is `>= 2^(maxe+1)`. Generally speaking, any sum with an absolute value
+    // `>= 2^(maxe+1)` overflows, but whenever it returns infinity it's easier to handle. IEEE-754
+    // says overflow happens if the *rounded* value, assuming *an unlimited exponent*, doesn't fit,
+    // so what we actually want to check here is `|round(a + b)| >= 2^(maxe+1)`.
+
+    if let Some(round) = env.emulate_rounding_mode() {
+        // In absence of cheap correctly rounding arithmetic, we use some tricks to test
+        // `a + b >= 2^(maxe+1)`.
         //
-        // We can use the same approach as in `add_with_rounding`, and luckily it's quite cheap if
-        // rounding modes are native. As a reminder, as long as we don't have subnormals, `a/2` and
-        // `b/2` are exact, `a/2 + b/2` can't overflow and is thus rounded just like `a + b` would
-        // be with unlimited exponent range, and so `|a/2 + b/2| >= 2^maxe` is equivalent to the
-        // overflow condition for `a + b`.
+        // Let's say `a >= b`, then we test `b >= (2^maxe - a) + 2^maxe`. If `a >= 2^maxe`, the RHS
+        // is exact and we get a correct result. If `a < 2^maxe`, LHS is also `< 2^maxe` while RHS
+        // is `>= 2^maxe`, so we correctly get `false`. Similarly if `a < b`.
+        let limit = T::TWO.powi(T::MAX_EXPONENT);
+
+        let (max, min) = if Fast(a) >= Fast(b) { (a, b) } else { (b, a) };
+        let is_too_high = Fast(min) >= Fast((limit - max) + limit);
+        let is_too_low = Fast(max) <= Fast((-limit - min) - limit);
+        let is_overflow = match round {
+            RoundingMode::ToNearest => unreachable!(),
+            RoundingMode::Floor => is_too_high,
+            RoundingMode::Ceil => is_too_low,
+            RoundingMode::Trunc => is_too_high || is_too_low,
+            RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
+        };
+
+        if is_overflow {
+            env.raise(Exceptions::OVERFLOW);
+        }
+    } else {
+        // When operations with the given rounding mode are cheap, we can copy the approach from
+        // `add_with_rounding`. As long as we don't have subnormals, `a/2` and `b/2` are exact,
+        // `a/2 + b/2` can't overflow and is thus rounded just like `a + b` would be with unlimited
+        // exponent range, and so `|a/2 + b/2| >= 2^maxe` is equivalent to the overflow condition
+        // for `a + b`.
         //
-        // The only new issue is that we can no longer assume that `a` and `b` are normal. Luckily,
-        // things still work out. For example, for floor:
+        // Luckily, things work out even if `a` or `b` are subnormal. For example, for floor:
         // - Large finite value + positive subnormal returns the same value regardless of the
         //   subnormal, so it doesn't matter that it effectively becomes a bit smaller.
         // - Large finite value + negative subnormal returns the same value as long as the subnormal

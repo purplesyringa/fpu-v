@@ -96,12 +96,15 @@ fn mul_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         },
         |reduced_product| product_error(a * coeff, b * coeff, reduced_product),
         |reduced_product| reduced_product * T::TWO.powi(2 * k),
+        || a.is_finite() && b.is_finite(),
         round,
         env,
     )
 }
 
-fn product_error<T: Native>(x: T, y: T, z: T) -> T {panic!()}
+fn product_error<T: Native>(x: T, y: T, z: T) -> T {
+    panic!()
+}
 
 // XXX: this function is untested because my hardware (x86) never uses it
 fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
