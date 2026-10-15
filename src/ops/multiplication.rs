@@ -167,11 +167,46 @@ impl<F: Float> Operation for Mul<F> {
             return false;
         }
 
-        // On hosts without FMA, we check whether the lowest bit set in `a * b` (when treated
-        // mathematically as a sum of `2^k_i`, so the index can be negative) is no lower than the
-        // lowest bit that *can* fit in `result` (determined only by its exponent). This validates
-        // that no bits were lost due to rounding. It's cheaper than computing the exact error,
-        // which doesn't even work when the active rounding mode isn't NE.
+        // For some rounding modes, exactness can be checked with division. For example, for floor,
+        // if the product is inexact:
+        //     round(a * b) < a * b
+        //     => round(a * b) / |a| < sign(a) * b
+        //     => round(round(a * b) / |a|) < sign(a) * b
+        // Note that we need to divide by the absolute value so that the errors from multiplication
+        // and division can't cancel out. We don't need this for trunc.
+        //
+        // If `a = 0`, this check will compare with `NaN`, so we use `< !` instead of `==`. Since
+        // the result is finite, we don't need to worry about `0 * inf` and `0 * NaN`.
+        match round {
+            RoundingMode::Floor => {
+                return !(Quiet(result / self.a.abs())
+                    < Quiet(if self.a.is_sign_negative() {
+                        -self.b
+                    } else {
+                        self.b
+                    }));
+            }
+            RoundingMode::Ceil => {
+                return !(Quiet(result / self.a.abs())
+                    > Quiet(if self.a.is_sign_negative() {
+                        -self.b
+                    } else {
+                        self.b
+                    }));
+            }
+            RoundingMode::Trunc => {
+                let trunc_b = result / self.a;
+                return !(Quiet(trunc_b) < Quiet(self.b) || Quiet(trunc_b) > Quiet(self.b));
+            }
+            RoundingMode::ToNearest | RoundingMode::ToNearestTiesToMaxMagnitude => {}
+        }
+
+        // For NE and RMM, we use a more general algorithm. We check whether the lowest bit set in
+        // `a * b` (when treated mathematically as a sum of `2^k_i`, so the index can be negative)
+        // is no lower than the lowest bit that *can* fit in `result` (determined only by its
+        // exponent). This validates that no bits were lost due to rounding. Since we're running in
+        // NE or RMM, there are no overflows-to-finite to worry about. This is cheaper than
+        // computing the exact error with the Veltkamp algorithm, which fails for subnormals anyway.
         //
         // Essentially, we test
         //     |lowest_bit_set(a) * lowest_bit_set(b)| >= |lowest_bit_fit(result)|,
@@ -185,18 +220,7 @@ impl<F: Float> Operation for Mul<F> {
             return true;
         }
 
-        // Some problems arise if the product overflows to a finite value: this algorithm ensures
-        // that the lowest bit fits, but not that the highest bit does. So we check for overflow to
-        // make sure. XXX maybe this can be improved?
-        if matches!(
-            round,
-            RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
-        ) && self.is_overflow_finite_native(env)
-        {
-            return false;
-        }
-
-        // This computation  should be vectorized over `a` and `b`. Rust refuses to do so, probably
+        // This computation should be vectorized over `a` and `b`. Rust refuses to do so, probably
         // due to the number of nested trivial functions. The C port should make sure this works.
         let bit_a = lowest_bit_set(self.a).abs();
         let bit_b = lowest_bit_set(self.b).abs();
