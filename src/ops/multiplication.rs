@@ -214,8 +214,11 @@ impl<F: Float> Operation for Mul<F> {
         }
     }
 
+    #[inline(always)]
     fn is_overflow_finite_native(&self, env: &mut Env) -> bool {
         // We need to check if `|a * b| >= 2^(maxe+1)`.
+        let round = env.get_rounding_mode();
+        let limit = Self::T::TWO.powi(Self::T::MAX_EXPONENT);
 
         if env.features().fma {
             // With FMA available, we can rewrite `a * b >= 2^(maxe+1)` as
@@ -223,48 +226,30 @@ impl<F: Float> Operation for Mul<F> {
             // which for flooring is equivalent to
             //     round(a * b - 2^maxe) >= 2^maxe.
             // Ceiling and truncation use similar conditions.
-            let coeff = Self::T::TWO.powi(Self::T::MAX_EXPONENT);
-            return match env.get_rounding_mode() {
+            return match round {
                 RoundingMode::ToNearest => unreachable!(),
-                RoundingMode::Floor => Fast(env.mul_add(self.a, self.b, -coeff)) >= Fast(coeff),
-                RoundingMode::Ceil => Fast(env.mul_add(self.a, self.b, coeff)) <= Fast(-coeff),
+                RoundingMode::Floor => Fast(env.mul_add(self.a, self.b, -limit)) >= Fast(limit),
+                RoundingMode::Ceil => Fast(env.mul_add(self.a, self.b, limit)) <= Fast(-limit),
                 RoundingMode::Trunc => {
-                    Fast(env.mul_add(self.a.abs(), self.b.abs(), -coeff)) >= Fast(coeff)
+                    Fast(env.mul_add(self.a.abs(), self.b.abs(), -limit)) >= Fast(limit)
                 }
                 RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
             };
         }
 
-        // Lemma: for normal numbers `x` and `y`, `round(x * y)` has a maximum exponent of
-        // `exp_x + exp_y + 1`, because in worst-case scenario:
-        //     x = 2^exp_x * (2 - 2^-mantissa_len)
-        //     y = 2^exp_y * (2 - 2^-mantissa_len)
-        // ...we have:
-        //     x * y = 2^(exp_x + expy) * (2 - 2^-mantissa_len)^2
-        //           <= 2^(exp_x + expy + 1) * (2 - 2^-mantissa_len)
-        // ...so the product fits in `exp_x + exp_y + 1` regardless of the rounding mode.
-        //
-        // Let `k = (maxe + 1) / 2`, always a whole number for standard floats. By the lemma,
-        // `round((a * 2^-k) * (b * 2^-k))` has this upper bound on the exponent:
-        //     (exp_a - k) + (exp_b - k) + 1 = exp_a + exp_b - maxe <= maxe
-        // ...so it doesn't overflow and rounds just like if `round(a * b)` had an unlimited
-        // exponent range from the above. We can thus rewrite the check as:
-        //     |round((a * 2^-k) * (b * 2^-k))| >= 2^(maxe+1) * 2^-2k = 1
-        // ...but only as long as no underflow occurs in computing `a * 2^-k` and `b * 2^-k`.
-        //
-        // Let's see what an underflow can affect.
-        // - Can a false negative happen? `a * 2^-k` underflows if `exp_a - k < mine`, which implies
-        //       exp_a + exp_b + 1 <= mine + k + maxe < maxe
-        //   ...which indicates no overflow, so no.
-        // - Can a false positive happen? If `a * 2^-k` underflows, it rounds either to zero or to
-        //   the smallest subnormal depending on the rounding mode. In the worst case, we get:
-        //       2^(mine-mantissa_len) * |b * 2^-k| < 2^(mine-mantissa_len) * 2^(maxe+1-k)
-        //           = 2^((mine + maxe) - mantissa_len + 1 - k)
-        //           = 2^(1 - mantissa_len + 1 - k)
-        //           < 1,
-        //   ...so the comparison fails, correctly.
-        let coeff = Self::T::TWO.powi(-(Self::T::MAX_EXPONENT + 1) / 2);
-        Fast(((self.a * coeff) * (self.b * coeff)).abs()) >= Fast(Self::T::ONE)
+        // Rewrite `a * b >= 2^(maxe+1)` as `a * (b * 0.5) >= 2^maxe`. For flooring, this is
+        // equivalent to
+        //     round(a * (b * 0.5)) >= 2^maxe
+        // ...as long as `b * 0.5` doesn't underflow. But if it underflows, it must be small enough
+        // that `a * b` can't be close to `2^maxe` anyway. Other rounding modes work similarly.
+        let half_product = self.a * (self.b * Self::T::HALF);
+        match round {
+            RoundingMode::ToNearest => unreachable!(),
+            RoundingMode::Floor => Fast(half_product) >= Fast(limit),
+            RoundingMode::Ceil => Fast(half_product) <= Fast(-limit),
+            RoundingMode::Trunc => Fast(half_product.abs()) >= Fast(limit),
+            RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
+        }
     }
 
     fn is_underflow_native(&self) -> bool {
