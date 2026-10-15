@@ -222,20 +222,15 @@ impl<F: Float> Operation for Mul<F> {
 
         // This computation should be vectorized over `a` and `b`. Rust refuses to do so, probably
         // due to the number of nested trivial functions. The C port should make sure this works.
-        let bit_a = lowest_bit_set(self.a).abs();
-        let bit_b = lowest_bit_set(self.b).abs();
+        let bit_a = lowest_bit_set(self.a);
+        let bit_b = lowest_bit_set(self.b);
         let bit_product = lowest_bit_fit_abs(result);
 
-        // Underflows can occur during the multiplication. That's fine if they are rounded down to
-        // `0` (because, if the correct product has a bit that must underflow, the entire product
+        // Underflows can occur during the multiplication, but that's fine if they are rounded down
+        // to `0` (because, if the correct product has a bit that must underflow, the entire product
         // must be inexact, so `0 >= non-zero` -> `false` is the correct answer). This is the case
-        // for NE/RMM, which priortize `0` over the smallest subnormal, and for trunc/floor as long
-        // as the values are positive, but ceil rounds them up, so the sign needs to be flipped.
-        if round != RoundingMode::Ceil {
-            Fast(bit_a * bit_b) >= Fast(bit_product)
-        } else {
-            Fast(-bit_a * bit_b) <= Fast(-bit_product)
-        }
+        // for NE and RMM, which priortize `0` over the smallest subnormal.
+        Fast((bit_a * bit_b).abs()) >= Fast(bit_product)
     }
 
     #[inline(always)]
