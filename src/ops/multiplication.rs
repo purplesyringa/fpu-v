@@ -268,7 +268,7 @@ impl<F: Float> Operation for Mul<F> {
     }
 
     fn is_underflow_native(&self) -> bool {
-        // We need to check if `round(a * b) < 2^mine`, where `round` limits the mantissa length,
+        // We need to check if `|round(a * b)| < 2^mine`, where `round` limits the mantissa length,
         // but not the exponent range.
         //
         // If `result` is a subnormal, we know that an underflow has occurred: if the subnormal
@@ -299,7 +299,9 @@ impl<F: Float> Operation for Mul<F> {
         // `|a * b| >= 2^mine` this can overflow, but it'll return `false`, which is correct.
         //
         // Note that `a * (b * 2)` needs to be computed with the same rounding mode as `product` was
-        // computed originally, so this logic is only valid for native modes.
+        // computed originally, so this logic is only valid for native modes. It also cannot in
+        // general be simplified with FMA, because for asymmetric rounding modes, `a * b` rounds
+        // differently than `-a * b`, so bounds checking becomes tricky and slower than this logic.
         Fast((self.a * (self.b * Self::T::TWO)).abs())
             < Fast(Self::T::TWO.powi(Self::T::MIN_EXPONENT + 1))
     }
