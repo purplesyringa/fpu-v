@@ -127,8 +127,8 @@ pub trait Operation {
 
 /// Compute the value of an [`Operation`], emulating rounding and exceptions if necessary.
 ///
-/// This function never returns an input without going through `op.compute()`, so `NaN`s are
-/// autocanonicalized if the host supports that.
+/// This function never returns an input without going through `op.compute()` or
+/// `op.compute_reduced()`, so `NaN`s are autocanonicalized if the host supports that.
 #[inline(always)]
 pub fn compute_operation<Op: Operation>(op: &Op, env: &mut Env) -> Op::T {
     let Some(round) = env.emulate_rounding_mode() else {
