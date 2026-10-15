@@ -165,39 +165,35 @@ impl<F: Float> Operation for Add<F> {
         // be with unlimited exponent range, and so `a/2 + b/2 >= 2^maxe` is equivalent to the
         // overflow condition for `a + b`.
         //
-        // Luckily, things work out even if `a` or `b` are subnormal:
-        // - Large finite value + positive subnormal returns the same value regardless of the
-        //   subnormal, so it doesn't matter that it effectively becomes a bit smaller.
-        // - Large finite value + negative subnormal returns the same value as long as the subnormal
-        //   doesn't fall to zero, but halving a negative subnormal under floor mode retains this
-        //   property.
-        //
-        // The same general idea applies to ceil and trunc. Technically we're allowed to use
-        // `|a + b|` in all scenarios, because an overflow in the wrong direction results in
-        // an infinite output and we're guaranteed the output was finite, but dropping `|...|` is
-        // faster if the mode is known.
-        let limit = Self::T::TWO.powi(Self::T::MAX_EXPONENT);
-        let half_sum = self.a * Self::T::HALF + self.b * Self::T::HALF;
-        match round {
-            RoundingMode::ToNearest => unreachable!(),
-            RoundingMode::Floor => Fast(half_sum) >= Fast(limit),
-            RoundingMode::Ceil => Fast(half_sum) <= Fast(-limit),
-            RoundingMode::Trunc => Fast(half_sum.abs()) >= Fast(limit),
-            RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
-        }
-        // This calculation can be optimized a little further. We can manually decrease the exponent
-        // with integer arithmetic, which is clearly correct except when `|a| < 2^(mine + 1)` (or
-        // similarly with `b`). The intended result in this case is always `false`, and it turns out
-        // that we always get there:
-        // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a subnormal that is slightly
-        //   different, but still small enough not to affect anything.
+        // For performance, we'd like to divide by `2` by adjusting the exponent instead of writing
+        // `* 0.5`. Luckily, things work out in this case even if `a` or `b` are subnormal. The
+        // intended result in this case is `false`, and we always get there:
+        // - For `2^mine <= |a| < 2^(mine + 1)`, decrementing the exponent produces a subnormal that
+        //   is slightly different from the true value, but is still small enough that adding it to
+        //   any fintie value can't cause overflow.
         // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum. It can
         //   be an sNaN, which would raise an unexpected exception, but this function is allowed to
         //   raise exceptions per the trait contract.
         // - `a = 0` results in infinity, but adding a zero is always exact, so we don't end up in
         //   this function at all.
-        // I avoided doing this because this is a slow path, so investing time in this is not very
-        // fruitful. But we can improve this if it ends up being useful elsewhere.
+        //
+        // The same general idea applies to ceil and trunc. Technically we're allowed to use
+        // `|a + b|` in all scenarios, because an overflow in the wrong direction results in
+        // an infinite output and we're guaranteed the output was finite, but dropping `|...|` is
+        // faster if the mode is known.
+        let half = |x: Self::T| {
+            Self::T::from_bits(x.to_bits() - Self::T::with_biased_exponent(1).to_bits())
+        };
+        let half_sum = half(self.a) + half(self.b);
+        let limit = Self::T::TWO.powi(Self::T::MAX_EXPONENT);
+        match round {
+            RoundingMode::ToNearest => unreachable!(),
+            // XXX: This can be `Fast`, but it can get `NaN` inputs.
+            RoundingMode::Floor => Quiet(half_sum) >= Quiet(limit),
+            RoundingMode::Ceil => Quiet(half_sum) <= Quiet(-limit),
+            RoundingMode::Trunc => Quiet(half_sum.abs()) >= Quiet(limit),
+            RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
+        }
     }
 }
 
