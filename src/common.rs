@@ -8,16 +8,25 @@ use core::cmp::Ordering;
 ///
 /// This function implements an algorithm that raises the correct exceptions and handles rounding
 /// near the `2^(maxe+1)` boundary correctly. It's tricky because a calculation can NE-overflow even
-/// if it wouldn't overflow with the correct rounding mode, resulting in a spurious exception. We
-/// avoid this with the following algorithm:
+/// if it wouldn't overflow with the correct rounding mode, resulting in a spurious exception.
+///
+/// Depending on whether the host supports exceptions, we use one of two algorithms.
+///
+/// With exceptions:
 ///
 /// 1. If the inputs are small enough that the operation can't NE-overflow, compute it and then
 ///    adjust rounding.
 /// 2. Otherwise, scale down the inputs by `2^-k` such that the operation can no longer NE-overflow,
-///    compute and adjust the result, and scale it back.
+///    compute and adjust the result, and scale it back. This step is complex because no cheap
+///    predicate can predict a spurious overflow without a bunch of false positives, and we want it
+///    cheap because (1) is the common case.
 ///
-/// The second step is complex because no cheap predicate can predict a spurious overflow without
-/// a bunch of false positives, and we want it cheap because (1) is the common case.
+/// Without exceptions:
+///
+/// 1. Compute the value. If it's not a specific possible fake infinity, or if any input is
+///    non-finite, return the answer.
+/// 2. Otherwise, replace it with the correctly saturated answer (+-the largest finite float) and
+///    raise the overflow exception if necessary.
 ///
 /// This function takes quite a few specific primitives as input:
 ///
@@ -49,9 +58,15 @@ use core::cmp::Ordering;
 ///
 /// - `are_inputs_finite()` checks whether all input to the operation are finite.
 ///
+/// - `is_overflow()` checks whether an infinity that has been produced by `op()` is an actual
+///   overflow or just a round-up by NE. Essentially it should return whether
+///   `|rounded result| >= 2^(maxe+1)` had the exponent been unbounded. It may assume that `op()`
+///   returned an infinity consistent with such a possibility for the active rounding mode, and that
+///   all inputs are finite.
+///
 /// On hosts with exceptions, this function raising all exceptions assuming that `op` raises the
-/// correct exceptions for NE mode. On hosts without exceptions, this function doesn't raise any
-/// emulated exceptions.
+/// correct exceptions for NE mode. On hosts without exceptions, this function raises overflow if
+/// the result is finite.
 #[inline(always)]
 pub fn compute_emulating_rounding<T: Native>(
     op: impl FnOnce() -> T,
@@ -61,6 +76,7 @@ pub fn compute_emulating_rounding<T: Native>(
     reduced_error: impl FnOnce(T) -> T,
     lift: impl FnOnce(T) -> T,
     are_inputs_finite: impl FnOnce() -> bool,
+    is_overflow: impl FnOnce() -> bool,
     round: RoundingMode,
     env: &mut Env,
 ) -> T {
@@ -106,9 +122,13 @@ pub fn compute_emulating_rounding<T: Native>(
 
         // If all inputs are finite, but the result is infinite, the infinity must come from NE
         // overflow and should be corrected. The correctly rounded output is the same regardless of
-        // whether the mathematical result is slightly below `2^(maxe+1)` or above it. The caller is
-        // responsible for raising an emulated overflow exception if necessary -- we can't do it
-        // here unconditionally, and detecting it here is no less expensive than afterwards.
+        // whether the mathematical result is slightly below `2^(maxe+1)` or above it; only the
+        // overflow condition depends on it. We set the flag here instead of letting the caller deal
+        // with it so that `is_overflow` may skip checking for finite inputs, exactness, etc.
+        if is_overflow() {
+            env.raise(Exceptions::OVERFLOW | Exceptions::INEXACT);
+        }
+
         return result.nudge(-1);
     }
 

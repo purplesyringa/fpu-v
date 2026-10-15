@@ -77,6 +77,24 @@ fn add_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         |reduced_sum| sum_error(a * T::HALF, b * T::HALF, reduced_sum),
         |reduced_sum| reduced_sum * T::TWO,
         || a.is_finite() && b.is_finite(),
+        || {
+            // Checks `a + b >= 2^(maxe+1)`.
+            //
+            // Let's say `a >= b`, then we test `b >= (2^maxe - a) + 2^maxe`. If `a >= 2^maxe`, the
+            // RHS is exact and we get a correct result. If `a < 2^maxe`, LHS is also `< 2^maxe`
+            // while RHS is `>= 2^maxe`, so we correctly get `false`. Similarly if `a < b`.
+            let limit = T::TWO.powi(T::MAX_EXPONENT);
+            let (max, min) = if Fast(a) >= Fast(b) { (a, b) } else { (b, a) };
+            let is_too_high = Fast(min) >= Fast((limit - max) + limit);
+            let is_too_low = Fast(max) <= Fast((-limit - min) - limit);
+            match round {
+                RoundingMode::ToNearest => unreachable!(),
+                RoundingMode::Floor => is_too_high,
+                RoundingMode::Ceil => is_too_low,
+                RoundingMode::Trunc => is_too_high || is_too_low,
+                RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
+            }
+        },
         round,
         env,
     )
@@ -137,10 +155,12 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
 
     // Addition can never underflow, so we don't need to test for it.
 
-    if !matches!(
-        env.get_rounding_mode(),
-        RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
-    ) {
+    if env.features().round
+        || !matches!(
+            env.get_rounding_mode(),
+            RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
+        )
+    {
         return;
     }
     // Floor, ceil, and trunc can overflow without returning `+-inf`, e.g. floor overflows in such
@@ -149,59 +169,33 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
     // says overflow happens if the *rounded* value, assuming *an unlimited exponent*, doesn't fit,
     // so what we actually want to check here is `|round(a + b)| >= 2^(maxe+1)`.
 
-    if let Some(round) = env.emulate_rounding_mode() {
-        // XXX: this is only necessary if we originally got a matching infinity
-        // In absence of cheap correctly rounding arithmetic, we use some tricks to test
-        // `a + b >= 2^(maxe+1)`.
-        //
-        // Let's say `a >= b`, then we test `b >= (2^maxe - a) + 2^maxe`. If `a >= 2^maxe`, the RHS
-        // is exact and we get a correct result. If `a < 2^maxe`, LHS is also `< 2^maxe` while RHS
-        // is `>= 2^maxe`, so we correctly get `false`. Similarly if `a < b`.
-        let limit = T::TWO.powi(T::MAX_EXPONENT);
-
-        let (max, min) = if Fast(a) >= Fast(b) { (a, b) } else { (b, a) };
-        let is_too_high = Fast(min) >= Fast((limit - max) + limit);
-        let is_too_low = Fast(max) <= Fast((-limit - min) - limit);
-        let is_overflow = match round {
-            RoundingMode::ToNearest => unreachable!(),
-            RoundingMode::Floor => is_too_high,
-            RoundingMode::Ceil => is_too_low,
-            RoundingMode::Trunc => is_too_high || is_too_low,
-            RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
-        };
-
-        if is_overflow {
-            env.raise(Exceptions::OVERFLOW);
-        }
-    } else {
-        // When operations with the given rounding mode are cheap, we can copy the approach from
-        // `add_with_rounding`. As long as we don't have subnormals, `a/2` and `b/2` are exact,
-        // `a/2 + b/2` can't overflow and is thus rounded just like `a + b` would be with unlimited
-        // exponent range, and so `|a/2 + b/2| >= 2^maxe` is equivalent to the overflow condition
-        // for `a + b`.
-        //
-        // Luckily, things work out even if `a` or `b` are subnormal. For example, for floor:
-        // - Large finite value + positive subnormal returns the same value regardless of the
-        //   subnormal, so it doesn't matter that it effectively becomes a bit smaller.
-        // - Large finite value + negative subnormal returns the same value as long as the subnormal
-        //   doesn't fall to zero, but halving a negative subnormal under floor mode retains this
-        //   property.
-        let limit = T::TWO.powi(T::MAX_EXPONENT);
-        if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(limit) {
-            env.raise(Exceptions::OVERFLOW);
-        }
-        // This calculation (`a * 0.5 + b * 0.5`) can be optimized a little further. We can manually
-        // decrease the exponent with integer arithmetic, which is clearly correct except when
-        // `|a| < 2^(mine + 1)` (or similarly with `b`). The intended result in this case is always
-        // `false`, and it turns out that we always get there:
-        // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a subnormal that is slightly
-        //   different, but still small enough not to affect anything.
-        // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum. It can
-        //   be an sNaN, which would raise an unexpected exception, but this function is only used
-        //   when there are no exceptions.
-        // - `a = 0` results in infinity, but adding a zero is always exact, so we don't end up in
-        //   this branch at all.
-        // I avoided doing this because this is a slow path, so investing time in this is not very
-        // fruitful. But we can improve this if it ends up being useful elsewhere.
+    // When operations with the given rounding mode are cheap, we can copy the approach from
+    // `add_with_rounding`. As long as we don't have subnormals, `a/2` and `b/2` are exact,
+    // `a/2 + b/2` can't overflow and is thus rounded just like `a + b` would be with unlimited
+    // exponent range, and so `|a/2 + b/2| >= 2^maxe` is equivalent to the overflow condition for
+    // `a + b`.
+    //
+    // Luckily, things work out even if `a` or `b` are subnormal. For example, for floor:
+    // - Large finite value + positive subnormal returns the same value regardless of the subnormal,
+    //   so it doesn't matter that it effectively becomes a bit smaller.
+    // - Large finite value + negative subnormal returns the same value as long as the subnormal
+    //   doesn't fall to zero, but halving a negative subnormal under floor mode retains this
+    //   property.
+    let limit = T::TWO.powi(T::MAX_EXPONENT);
+    if Fast((a * T::HALF + b * T::HALF).abs()) >= Fast(limit) {
+        env.raise(Exceptions::OVERFLOW);
     }
+    // This calculation (`a * 0.5 + b * 0.5`) can be optimized a little further. We can manually
+    // decrease the exponent with integer arithmetic, which is clearly correct except when
+    // `|a| < 2^(mine + 1)` (or similarly with `b`). The intended result in this case is always
+    // `false`, and it turns out that we always get there:
+    // - For `2^mine <= |a| < 2^(mine + 1)`, it ends up producing a subnormal that is slightly
+    //   different, but still small enough not to affect anything.
+    // - For `0 < |a| < 2^mine`, it ends up producing NaN, which propagates to the sum. It can be
+    //   an sNaN, which would raise an unexpected exception, but this function is only used when
+    //   there are no exceptions.
+    // - `a = 0` results in infinity, but adding a zero is always exact, so we don't end up in this
+    //   branch at all.
+    // I avoided doing this because this is a slow path, so investing time in this is not very
+    // fruitful. But we can improve this if it ends up being useful elsewhere.
 }

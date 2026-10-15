@@ -97,6 +97,7 @@ fn mul_with_rounding<T: Native>(a: T, b: T, round: RoundingMode, env: &mut Env) 
         |reduced_product| product_error(a * coeff, b * coeff, reduced_product),
         |reduced_product| reduced_product * T::TWO.powi(2 * k),
         || a.is_finite() && b.is_finite(),
+        || unimplemented!(),
         round,
         env,
     )
