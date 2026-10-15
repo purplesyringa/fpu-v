@@ -134,7 +134,7 @@ impl<F: Float> Operation for Add<F> {
         }
     }
 
-    fn is_exact_native(&self, result: Self::T) -> bool {
+    fn is_exact_native(&self, result: Self::T, _env: &mut Env) -> bool {
         // We avoid using 2Sum/Fast2Sum to compute the error because it assumes round-to-nearest,
         // while the rounding mode here can be arbitrary, so we use another approach.
         // XXX: this should be `Fast`
@@ -159,7 +159,7 @@ impl<F: Float> Operation for Add<F> {
         //      14 pages. https://doi.org/10.1145/3054947
     }
 
-    fn is_overflow_finite_native(&self, round: RoundingMode) -> bool {
+    fn is_overflow_finite_native(&self, env: &mut Env) -> bool {
         // We want to check `a + b >= 2^(maxe+1)`. As long as we don't have subnormals, `a/2` and
         // `b/2` are exact, `a/2 + b/2` can't overflow and is thus rounded just like `a + b` would
         // be with unlimited exponent range, and so `a/2 + b/2 >= 2^maxe` is equivalent to the
@@ -186,7 +186,7 @@ impl<F: Float> Operation for Add<F> {
         };
         let half_sum = half(self.a) + half(self.b);
         let limit = Self::T::TWO.powi(Self::T::MAX_EXPONENT);
-        match round {
+        match env.get_rounding_mode() {
             RoundingMode::ToNearest => unreachable!(),
             // XXX: This can be `Fast`, but it can get `NaN` inputs.
             RoundingMode::Floor => Quiet(half_sum) >= Quiet(limit),
@@ -194,6 +194,11 @@ impl<F: Float> Operation for Add<F> {
             RoundingMode::Trunc => Quiet(half_sum.abs()) >= Quiet(limit),
             RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
         }
+    }
+
+    fn is_underflow_native(&self) -> bool {
+        // Addition never underflows.
+        false
     }
 }
 

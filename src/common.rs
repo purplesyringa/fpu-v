@@ -101,7 +101,7 @@ pub trait Operation {
     /// `result` can be non-finite, in which case this function should return `false`.
     ///
     /// This function may raise any exceptions.
-    fn is_exact_native(&self, result: Self::T) -> bool;
+    fn is_exact_native(&self, result: Self::T, env: &mut Env) -> bool;
 
     /// Check whether the calculation overflows to a finite value in a native rounding mode.
     ///
@@ -113,7 +113,16 @@ pub trait Operation {
     ///   finite, i.e. finiteness is a precondition and not a postcondition.
     ///
     /// This function may assume that the computation is inexact. It may raise any exceptions.
-    fn is_overflow_finite_native(&self, round: RoundingMode) -> bool;
+    fn is_overflow_finite_native(&self, env: &mut Env) -> bool;
+
+    /// Check whether the calculation underflows in a native rounding mode.
+    ///
+    /// This function must check underflow "after rounding", i.e. whether
+    /// `round(exact result) < 2^mine`, where `round` limits the mantissa length, but not the
+    /// exponent range.
+    ///
+    /// This function may assume that the computation is inexact. It may raise any exceptions.
+    fn is_underflow_native(&self) -> bool;
 }
 
 /// Compute the value of an [`Operation`], emulating rounding and exceptions if necessary.
@@ -124,18 +133,21 @@ pub trait Operation {
 pub fn compute_operation<Op: Operation>(op: &Op, env: &mut Env) -> Op::T {
     let Some(round) = env.emulate_rounding_mode() else {
         let result = op.compute();
-        if !env.features().exceptions && !op.is_exact_native(result) {
+        if !env.features().exceptions && !op.is_exact_native(result, env) {
             if result.is_finite() {
                 env.raise(Exceptions::INEXACT);
-                // XXX: underflow
+
                 // Only floor/ceil/trunc can overflow to a finite value.
-                let round = env.get_rounding_mode();
                 if matches!(
-                    round,
+                    env.get_rounding_mode(),
                     RoundingMode::Floor | RoundingMode::Ceil | RoundingMode::Trunc
-                ) && op.is_overflow_finite_native(round)
+                ) && op.is_overflow_finite_native(env)
                 {
                     env.raise(Exceptions::OVERFLOW);
+                }
+
+                if op.is_underflow_native() {
+                    env.raise(Exceptions::UNDERFLOW);
                 }
             } else {
                 set_exceptions_non_finite(result, op, env);
