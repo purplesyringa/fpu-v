@@ -102,15 +102,10 @@ fn sum_error<T: Native>(a: T, b: T, sum: T) -> T {
 
 #[inline(always)]
 fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F, env: &mut Env) {
-    if !sum.is_finite() {
-        set_exceptions_non_finite(a, b, sum, float1, float2, env);
-        return;
-    }
-
     // We avoid using 2Sum/Fast2Sum to compute the error because it assumes round-to-nearest, while
     // the rounding mode here can be arbitrary, so we use another approach.
-    let is_exact = Fast(sum - a) == Fast(b) && Fast(sum - b) == Fast(a);
-
+    // XXX: this should be `Fast`
+    let is_exact = Quiet(sum - a) == Quiet(b) && Quiet(sum - b) == Quiet(a); // XXX: can we integrate this with computing the error or something?
     // If the sum is exact, both subtractions are exact as well and comparisons return true.
     //
     // If the sum is inexact, we use a lemma from [1] to obtain the sign of the error:
@@ -122,10 +117,19 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
     // In a nutshell, this means that if `|a| >= |b|`, `sum - a` is exact, so `sum - a == b` fails,
     // and symmetrically for `|a| <= |b|`, so at least one condition returns `false`.
     //
+    // This condition fails for `NaN` for obvious reasons, and for infinity because either both
+    // inputs are finite and the comparisons fail trivially, or one of the inputs is the same
+    // infinity and the corresponding subtraction produces `NaN`. This improves the fast path.
+    //
     // [1]: Sylvie Boldo, Stef Graillat, and Jean-Michel Muller. 2017. On the Robustness of the 2Sum
     //      and Fast2Sum Algorithms. ACM Trans. Math. Softw. 44, 1, Article 4 (March 2018),
     //      14 pages. https://doi.org/10.1145/3054947
     if is_exact {
+        return;
+    }
+
+    if !sum.is_finite() {
+        set_exceptions_non_finite(a, b, sum, float1, float2, env);
         return;
     }
 
@@ -146,6 +150,7 @@ fn set_exceptions<T: Native, F: Float>(a: T, b: T, sum: T, float1: F, float2: F,
     // so what we actually want to check here is `|round(a + b)| >= 2^(maxe+1)`.
 
     if let Some(round) = env.emulate_rounding_mode() {
+        // XXX: this is only necessary if we originally got a matching infinity
         // In absence of cheap correctly rounding arithmetic, we use some tricks to test
         // `a + b >= 2^(maxe+1)`.
         //
