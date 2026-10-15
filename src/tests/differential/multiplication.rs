@@ -25,8 +25,10 @@ fn multiplication() {
 
     let mut rng = fastrand::Rng::with_seed(1);
     for _ in 0..1000000 {
-        let a = F32::from_bits(rng.u32(..));
-        let b = F32::from_bits(rng.u32(..));
+        let a_bits_cleared = rng.u32(0..20);
+        let b_bits_cleared = rng.u32(0..20);
+        let a = F32::from_bits(rng.u32(..) & (u32::MAX << a_bits_cleared));
+        let b = F32::from_bits(rng.u32(..) & (u32::MAX << b_bits_cleared));
         check(a, b);
     }
     for a_exp in -150..130 {
