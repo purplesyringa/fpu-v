@@ -64,7 +64,7 @@ pub trait Operation {
     /// Just like `error`, but for `compute_reduced` instead of `compute`.
     fn error_reduced(&self, result_reduced: Self::T) -> Self::T;
 
-    /// Compute `result_reduced * 2^k`, where `k` is choosen consistently with `compute_reduced`.
+    /// Compute `result_reduced * 2^k`, where `k` is chosen consistently with `compute_reduced`.
     ///
     /// The native rounding mode is always NE. This function must raise exceptions consistently with
     /// the formula `result_reduced * 2^k`, i.e. its body should be equivalent to
