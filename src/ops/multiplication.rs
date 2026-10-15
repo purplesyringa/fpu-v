@@ -133,6 +133,7 @@ impl<F: Float> Operation for Mul<F> {
         todo!()
     }
 
+    #[inline(always)]
     fn is_exact_native(&self, result: Self::T, env: &mut Env) -> bool {
         let round = env.get_rounding_mode();
 
