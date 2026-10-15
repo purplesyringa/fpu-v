@@ -77,25 +77,31 @@ pub fn compute_emulating_rounding<T: Native>(
     // with the same generic algorithm because computing the error fails when infinities are
     // introduced. We have to detect it in a different manner.
 
-    // Flooring saturates a very positive output to the largest representable float, so a value of
-    // `+inf` as a result of NE rounding needs to be corrected, unless it's forwarding an infinity
-    // from the input. `-inf`, however, is always correct: obtaining `-inf` from NE means that the
-    // exact value is below the most negative finite float, so it'll remain `-inf` when floored.
-    let is_matching_infinity = |x: T| match round {
-        RoundingMode::ToNearest => unreachable!(),
-        // This is supposed to be `Fast`, but we pass `NaN`s if the host doesn't support exceptions.
-        RoundingMode::Floor => Quiet(x) == Quiet(T::INFINITY),
-        RoundingMode::Ceil => Quiet(x) == Quiet(-T::INFINITY),
-        RoundingMode::Trunc => Quiet(x.abs()) == Quiet(T::INFINITY),
-        RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
-    };
-
     if !env.features().exceptions {
         // In absence exceptions, we're allowed to just compute `op()`, even though it may result in
         // a spurious overflow.
         let result = op();
-        if !is_matching_infinity(result) || !are_inputs_finite() {
+        // Finite values are necessarily safe. `adjust_rounding_finite` checks if the result is
+        // finite anyway, so this check doesn't impede the fast path.
+        if result.is_finite() {
             return adjust_rounding_finite(result, error, round, env);
+        }
+
+        // Flooring saturates a very positive output to the largest representable float, so a value
+        // of `+inf` as a result of NE rounding needs to be corrected, unless it's forwarding
+        // an infinity from the input. `-inf`, however, is always correct: obtaining `-inf` from NE
+        // means that the exact value is below the most negative finite float, so it'll remain
+        // `-inf` when floored.
+        let is_safe_infinity = match round {
+            RoundingMode::ToNearest => unreachable!(),
+            RoundingMode::Floor => Quiet(result) == Quiet(-T::INFINITY),
+            RoundingMode::Ceil => Quiet(result) == Quiet(T::INFINITY),
+            RoundingMode::Trunc => false,
+            RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
+        };
+        // If the result is `NaN`, one of the inputs must be non-finite, so this check passes.
+        if is_safe_infinity || !are_inputs_finite() {
+            return result;
         }
 
         // If all inputs are finite, but the result is infinite, the infinity must come from NE
@@ -130,7 +136,14 @@ pub fn compute_emulating_rounding<T: Native>(
     // `round_unbounded(exact result) >= 2^maxe`.
     let result = lift(reduced_result);
 
-    result.nudge(if is_matching_infinity(result) { -1 } else { 0 })
+    let is_matching_infinity = match round {
+        RoundingMode::ToNearest => unreachable!(),
+        RoundingMode::Floor => Quiet(result) == Quiet(T::INFINITY),
+        RoundingMode::Ceil => Quiet(result) == Quiet(-T::INFINITY),
+        RoundingMode::Trunc => Quiet(result.abs()) == Quiet(T::INFINITY),
+        RoundingMode::ToNearestTiesToMaxMagnitude => unreachable!(),
+    };
+    result.nudge(if is_matching_infinity { -1 } else { 0 })
 }
 
 /// Given a value rounded in NE mode as well as the error, return a correctly rounded value.
