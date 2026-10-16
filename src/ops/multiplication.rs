@@ -203,34 +203,49 @@ impl<F: Float> Operation for Mul<F> {
 
         // For NE and RMM, we use a more general algorithm. We check whether the lowest bit set in
         // `a * b` (when treated mathematically as a sum of `2^k_i`, so the index can be negative)
-        // is no lower than the lowest bit that *can* fit in `result` (determined only by its
-        // exponent). This validates that no bits were lost due to rounding. Since we're running in
-        // NE or RMM, there are no overflows-to-finite to worry about. This is cheaper than
-        // computing the exact error with the Veltkamp algorithm, which fails for subnormals anyway.
+        // fits in `result`. This validates that no bits were lost due to rounding.
         //
-        // Essentially, we test
-        //     |lowest_bit_set(a) * lowest_bit_set(b)| >= |lowest_bit_fit(result)|,
-        // but there are some nuances.
+        // It's cheaper than computing the exact error with the Veltkamp algorithm, which fails for
+        // subnormals anyway.
+        //
+        // Let `k` be the index of the lowest bit set in the exact product. To check exactness, we
+        // test `round(result - 2^k) != result`. Here's why that works.
+        //
+        // - If all bits of the answer fit in the mantissa, the subtraction is exact and this test
+        //   passes, signifying an exact computation.
+        // - If two or more bits are rounded away, `2^k` is below 0.5 ulp and the test fails.
+        // - The most interesting scenario is when exactly one bit gets rounded away. That is a tie,
+        //   so tie resolution matters. Depending on the rounding mode, we need different proofs:
+        //   - For NE, the exact product `...?|1` is rounded to `...0` (possibly incrementing the
+        //     exponent), which attracts nearby ties, so `round(result - 2^k) = result`.
+        //   - For RMM, the initial computation of `a * b` rounds the tie up, so `result - 2^k` is
+        //     the same mathematical value and rounds to `result` again (assuming that
+        //     `result >= 0`). This is the only place where it matters that we test
+        //     `result - 2^k` and not `result + 2^k`.
 
-        // We can invoke `lowest_bit_fit` on a zero input if the product is below subnormals, in
-        // which case treating a zero `result` as a subnormal is correct from the precision
-        // perspective. But this forces us to handle the `a = 0`/`b = 0` case manually, otherwise
-        // we'll get `0 >= non-zero`.
+        // `lowest_bit_set` produces a zero for zero inputs, which our logic can't distinguish from
+        // an underflown `2^k` (which must be inexact), so get this out of the way first.
         if Fast(self.a) == Fast(Self::T::ZERO) || Fast(self.b) == Fast(Self::T::ZERO) {
             return true;
         }
-
         // This computation should be vectorized over `a` and `b`. Rust refuses to do so, probably
         // due to the number of nested trivial functions. The C port should make sure this works.
-        let bit_a = lowest_bit_set(self.a);
-        let bit_b = lowest_bit_set(self.b);
-        let bit_product = lowest_bit_fit_abs(result);
+        let bit_a = lowest_bit_set(self.a).abs();
+        let bit_b = lowest_bit_set(self.b).abs();
 
-        // Underflows can occur during the multiplication, but that's fine if they are rounded down
-        // to `0` (because, if the correct product has a bit that must underflow, the entire product
-        // must be inexact, so `0 >= non-zero` -> `false` is the correct answer). This is the case
-        // for NE and RMM, which priortize `0` over the smallest subnormal.
-        Fast((bit_a * bit_b).abs()) >= Fast(bit_product)
+        // Underflows can occur during the multiplication. That's fine if they are rounded down to
+        // `0` (because, if the correct product has a bit that must underflow, the entire product
+        // must be inexact, so `false` is the correct answer). This is the case for NE, which
+        // priortizes `0` over the smallest subnormal, but not for RMM. For now we use an ugly
+        // check, but there might be a better way to do it.
+        if round == RoundingMode::ToNearestTiesToMaxMagnitude
+            && Fast(bit_a * (bit_b * Self::T::TWO))
+                < Fast(Self::T::TWO.powi(Self::T::MIN_EXPONENT + 1))
+        {
+            return false;
+        }
+
+        Fast(result.abs() - bit_a * bit_b) != Fast(result.abs())
     }
 
     #[inline(always)]
@@ -474,24 +489,4 @@ fn lowest_bit_set<T: Native>(x: T) -> T {
     //     let exp = x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXP; // max(1) for subnormals
     //     let ctz = (x.to_bits() | (T::MANTISSA_MASK + T::Bits::ONE)).trailing_zeros();
     //     exp + ctz as i32 - T::MANTISSA_LEN as i32
-}
-
-/// Returns the smallest value `2^k` such that `2^k` can be set in the finite input `x` given its
-/// exponent. A zero input is treated as a subnormal value.
-fn lowest_bit_fit_abs<T: Native>(x: T) -> T {
-    assert!(x.is_finite(), "non-finite input to lowest_bit_fit");
-
-    let factor = T::TWO.powi(-(T::MANTISSA_LEN as i32));
-
-    let exp_bits = x.to_bits() & T::EXPONENT_MASK;
-    if exp_bits == T::Bits::ZERO {
-        // This almost always means `x` is a subnormal. `x = 0` happens only if the product `a * b`
-        // underflows to `0` while `a != 0` and `b != 0`, which shouldn't commonly occur.
-        T::TWO.powi(T::MIN_EXPONENT) * factor
-    } else {
-        T::from_bits(exp_bits) * factor
-    }
-
-    // Bit twiddling-only implementation returning the index `k`:
-    //     x.biased_exponent().max(1) as i32 - 1 - T::MIN_EXPONENT - T::MANTISSA_LEN as i32
 }
