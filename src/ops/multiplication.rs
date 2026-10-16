@@ -465,7 +465,7 @@ fn mul_with_underflow<T: Native>(a: T, b: T) -> T {
 /// Returns the smallest value `+-2^k` such that the binary expansion of the finite non-zero input
 /// `x` contains the addend `2^k`.
 ///
-/// The sign of the resulting value matches the sign of `x`.
+/// The sign of the resulting value is indeterminate.
 fn lowest_bit_set<T: Native>(x: T) -> T {
     #[cfg(not(feature = "explore"))]
     assert!(x.is_finite(), "non-finite input to lowest_bit_set");
