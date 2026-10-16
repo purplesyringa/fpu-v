@@ -1,7 +1,7 @@
 use crate::{
     Env, Float, RoundingMode,
     common::{Operation, compute_operation},
-    native::{Bits, Fast, Native, Quiet},
+    native::{Fast, Native, Quiet},
 };
 
 struct Mul<F: Float> {
@@ -209,19 +209,21 @@ impl<F: Float> Operation for Mul<F> {
         // subnormals anyway.
         //
         // Let `k` be the index of the lowest bit set in the exact product. To check exactness, we
-        // test `round(result - 2^k) != result`. Here's why that works.
+        // test `round(result +- 2^k) != result`. Here's why that works.
         //
-        // - If all bits of the answer fit in the mantissa, the subtraction is exact and this test
-        //   passes, signifying an exact computation.
+        // - If all bits of the answer fit in the mantissa, the addition/subtraction is exact and
+        //   this test passes, signifying an exact computation.
         // - If two or more bits are rounded away, `2^k` is below 0.5 ulp and the test fails.
         // - The most interesting scenario is when exactly one bit gets rounded away. That is a tie,
-        //   so tie resolution matters. Depending on the rounding mode, we need different proofs:
+        //   so tie resolution matters and the algorithm slightly differs between rounding modes:
         //   - For NE, the exact product `...?|1` is rounded to `...0` (possibly incrementing the
-        //     exponent), which attracts nearby ties, so `round(result - 2^k) = result`.
+        //     exponent), which attracts nearby ties, so `round(result + 2^k) = result`. Notably,
+        //     `round(result - 2^k)` doesn't work for this purpose, because if the exact product is
+        //     `10...0|1`, `result - 2^k` is exact with a decremented exponent. (Assuming
+        //     `result >= 0`.)
         //   - For RMM, the initial computation of `a * b` rounds the tie up, so `result - 2^k` is
-        //     the same mathematical value and rounds to `result` again (assuming that
-        //     `result >= 0`). This is the only place where it matters that we test
-        //     `result - 2^k` and not `result + 2^k`.
+        //     the same mathematical value and rounds to `result` again (assuming `result >= 0`).
+        //     `result + 2^k` fails to work because it can round up again.
 
         // `lowest_bit_set` produces a zero for zero inputs, which our logic can't distinguish from
         // an underflown `2^k` (which must be inexact), so get this out of the way first.
@@ -236,16 +238,17 @@ impl<F: Float> Operation for Mul<F> {
         // Underflows can occur during the multiplication. That's fine if they are rounded down to
         // `0` (because, if the correct product has a bit that must underflow, the entire product
         // must be inexact, so `false` is the correct answer). This is the case for NE, which
-        // priortizes `0` over the smallest subnormal, but not for RMM. For now we use an ugly
-        // check, but there might be a better way to do it.
-        if round == RoundingMode::ToNearestTiesToMaxMagnitude
-            && Fast(bit_a * (bit_b * Self::T::TWO))
-                < Fast(Self::T::TWO.powi(Self::T::MIN_EXPONENT + 1))
-        {
-            return false;
-        }
+        // priortizes `0` over the smallest subnormal, but not for RMM.
+        let bit = bit_a * bit_b;
 
-        Fast(result.abs() - bit_a * bit_b) != Fast(result.abs())
+        if round == RoundingMode::ToNearest {
+            Fast(result.abs() + bit) != Fast(result.abs())
+        } else {
+            // For now we use an ugly check, but there might be a better way to do it.
+            Fast(result.abs() - bit) != Fast(result.abs())
+                && Fast(bit_a * (bit_b * Self::T::TWO))
+                    >= Fast(Self::T::TWO.powi(Self::T::MIN_EXPONENT + 1))
+        }
     }
 
     #[inline(always)]

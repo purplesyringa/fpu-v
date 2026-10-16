@@ -54,4 +54,7 @@ fn multiplication() {
             check(b, a);
         }
     }
+
+    // Multiplies to 2^24 + 1, counterexample for broken exactness check
+    check(F32!(24929.0), F32!(673.0));
 }
