@@ -481,7 +481,7 @@ fn lowest_bit_set<T: Native>(x: T) -> T {
 
     // This is essentially just `x fp- (x & !(x - 1))`, but with extra logic to handle zeroed
     // mantissa without overflowing into the exponent. Don't ask me how I fit this in 4 operations,
-    // this formula was found by brute-force.
+    // this formula was found by brute-force, but you can make sense of it.
     let a = x.to_bits() & !T::MANTISSA_MASK;
     T::from_bits(x.to_bits() & (a - x.to_bits())) - T::from_bits(a)
 
